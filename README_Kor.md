@@ -1,4 +1,4 @@
-# SeeSpeakHangle 프로젝트 기획서
+# SeeSpeakHangle 프로젝트 기획서!
 > **프로젝트 명**: SeeSpeakHangle
 > **프로젝트 주제:** 이미지 입력을 받아 자동으로 한국어 설명문(캡션)을 생성하는 AI 모델 개발  
 > **데이터셋:** AI Hub 한국어 이미지 설명 데이터셋
