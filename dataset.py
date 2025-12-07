@@ -3,6 +3,7 @@ COVID-19 이미지 분류를 위한 데이터셋 로더
 데이터 로딩, 증강 및 훈련/검증/테스트 데이터 분할 처리
 """
 import os
+import random
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
@@ -44,7 +45,9 @@ class COVID19Dataset(Dataset):
             for img_name in os.listdir(class_dir):
                 img_path = os.path.join(class_dir, img_name)
                 if img_path.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    # 이미지 경로 추가
                     self.image_paths.append(img_path)
+                    # 답안지에 따라 클래스 인덱스 추가
                     self.labels.append(idx)
         
         print(f'Loaded {len(self.image_paths)} images from {root_dir}')
@@ -90,21 +93,28 @@ def get_transforms(augment=True):
         # 강력한 증강이 적용된 훈련 변환
         transform = transforms.Compose([
             transforms.Resize((256, 256)),
+            # 랜덤한 영역을 자르고 224X224로 변환
             transforms.RandomResizedCrop(config.IMG_SIZE, scale=(0.8, 1.0)),
+            # 50% 확률로 수평으로 뒤집기
             transforms.RandomHorizontalFlip(p=0.5),
+            # 무작위 회전 15~-15도 회전
             transforms.RandomRotation(degrees=config.ROTATION_DEGREES),
+            # 무작위 평행 이동
             transforms.RandomAffine(
-                degrees=0,
-                translate=(0.1, 0.1),
-                scale=(0.9, 1.1)
+                degrees=0,# 회전 없음 (이미 RandomRotation에서 처리)
+                translate=(0.1, 0.1), # 가로/세로 10%까지 이동
+                scale=(0.9, 1.1) # 90%~110% 크기 변환
             ),
+            # 무작위 밝기, 대비, 채도 조정
             transforms.ColorJitter(
                 brightness=config.COLOR_JITTER_BRIGHTNESS,
                 contrast=config.COLOR_JITTER_CONTRAST,
                 saturation=config.COLOR_JITTER_SATURATION,
                 hue=config.COLOR_JITTER_HUE
             ),
+            # PyTorch Tensor로 변환
             transforms.ToTensor(),
+            # 각 채널별로 평균을 빼고 표준편차로 나눔
             transforms.Normalize(mean=config.IMAGENET_MEAN, std=config.IMAGENET_STD)
         ])
     else:
@@ -142,6 +152,22 @@ def calculate_class_weights(dataset):
         print(f'  {class_name}: {weight:.4f} (count: {class_counts[idx]})')
     
     return weights_tensor
+
+
+def worker_init_fn(worker_id):
+    """
+    DataLoader의 각 워커에 대해 랜덤 시드를 설정하는 함수
+    
+    멀티프로세싱 환경에서 각 워커는 독립적인 랜덤 상태를 가지므로,
+    완벽한 재현성을 위해 워커별로 고유한 시드를 설정해야 합니다.
+    
+    Args:
+        worker_id (int): 워커 ID (0부터 num_workers-1까지)
+    """
+    # 기본 시드 + 워커 ID를 조합하여 각 워커에 고유한 시드 부여
+    worker_seed = config.RANDOM_SEED + worker_id
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def get_data_loaders(dataset_dir, batch_size=None, validation_split=None, num_workers=None):
@@ -207,13 +233,19 @@ def get_data_loaders(dataset_dir, batch_size=None, validation_split=None, num_wo
     # 전체 훈련 데이터셋에서 클래스 가중치 계산
     class_weights = calculate_class_weights(full_train_dataset)
     
+    # 재현성을 위한 Generator 생성
+    g = torch.Generator()
+    g.manual_seed(config.RANDOM_SEED)
+    
     # 데이터 로더 생성
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=True if torch.cuda.is_available() else False,
+        worker_init_fn=worker_init_fn,  # 워커별 시드 설정
+        generator=g  # 셔플 재현성을 위한 generator
     )
     
     val_loader = DataLoader(
@@ -221,7 +253,8 @@ def get_data_loaders(dataset_dir, batch_size=None, validation_split=None, num_wo
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=True if torch.cuda.is_available() else False,
+        worker_init_fn=worker_init_fn
     )
     
     test_loader = DataLoader(
@@ -229,7 +262,8 @@ def get_data_loaders(dataset_dir, batch_size=None, validation_split=None, num_wo
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=True if torch.cuda.is_available() else False,
+        worker_init_fn=worker_init_fn
     )
     
     print(f'\nDataset splits:')
