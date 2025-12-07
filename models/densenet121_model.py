@@ -1,6 +1,10 @@
 """
 DenseNet121 모델 구조
 """
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
 import torch.nn as nn
 from torchvision import models

@@ -26,11 +26,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.preprocessing import label_binarize
+import numpy as np
 
 import config
 from dataset import get_data_loaders
 from models import get_model
-from utils import set_seed, get_device, save_checkpoint, count_parameters
+from utils import set_seed, get_device, save_checkpoint, count_parameters, CheckpointManager
 
 
 class EarlyStopping:
@@ -205,11 +208,14 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, wr
 
 def validate(model, val_loader, criterion, device, epoch, writer=None):
     """
-    검증 데이터셋에서 모델 성능을 평가하는 함수
+    검증 데이터셋에서 모델 성능을 평가하는 함수 (의료 AI 평가 지표 포함)
     
-    학습 과정에서 모델이 과적합되지 않았는지 확인하기 위해
-    검증 데이터셋에서 성능을 평가합니다. 검증 시에는 그래디언트 계산이
-    필요하지 않으므로 torch.no_grad()를 사용하여 메모리를 절약합니다.
+    의료 AI에서 중요한 평가 지표들을 계산합니다:
+    - Recall (주 지표): 실제 환자를 놓치지 않는 것이 가장 중요
+    - Precision: 오진률 최소화
+    - Macro F1-Score: 전체 클래스 균형 성능
+    - AUC-ROC: 임계값 독립적 성능 평가
+    - Accuracy: 전체 정확도
     
     Args:
         model (nn.Module): 평가할 신경망 모델
@@ -220,67 +226,107 @@ def validate(model, val_loader, criterion, device, epoch, writer=None):
         writer (SummaryWriter, optional): TensorBoard 로깅을 위한 writer 객체
         
     Returns:
-        tuple: (평균_손실값, 정확도_백분율)
-            - 평균_손실값 (float): 검증 데이터셋의 평균 손실
-            - 정확도_백분율 (float): 검증 데이터에 대한 정확도 (0-100%)
-    
-    Note:
-        검증 시에는 model.eval() 모드에서 실행되어
-        Dropout이 비활성화되고 BatchNorm이 저장된 통계를 사용합니다.
+        dict: 모든 평가 지표를 포함하는 딕셔너리
+            - loss: 평균 손실값
+            - accuracy: 정확도 (%)
+            - recall: Macro Recall (%) - 주 평가 지표
+            - precision: Macro Precision (%)
+            - f1_score: Macro F1-Score (%)
+            - auc_roc: Macro AUC-ROC (0~1)
     """
     # 모델을 평가 모드로 설정
-    # Dropout이 비활성화되고 BatchNorm이 학습된 통계를 사용합니다
     model.eval()
     
     # 통계 추적을 위한 변수 초기화
-    running_loss = 0.0  # 누적 손실값
-    correct = 0         # 정확하게 예측한 샘플 수
-    total = 0           # 전체 샘플 수
+    running_loss = 0.0
+    
+    # 전체 예측값과 레이블 저장 (메트릭 계산용)
+    all_labels = []
+    all_predictions = []
+    all_probabilities = []
     
     # 그래디언트 계산 비활성화 (메모리 절약 및 속도 향상)
     with torch.no_grad():
-        # 진행률 표시 바 생성
         pbar = tqdm(val_loader, desc=f'Epoch {epoch} [Val]')
         
         for batch_idx, (images, labels) in enumerate(pbar):
-            # 데이터를 지정된 장치로 이동
             images, labels = images.to(device), labels.to(device)
             
-            # 순전파만 수행 (역전파 없음)
+            # 순전파
             outputs = model(images)
             loss = criterion(outputs, labels)
             
-            # 통계 업데이트
+            # 손실 누적
             running_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
             
-            # 진행률 표시 바에 현재 상태 업데이트
+            # 예측 확률과 클래스 추출
+            probabilities = torch.softmax(outputs, dim=1)
+            _, predicted = outputs.max(1)
+            
+            # 결과 저장
+            all_labels.extend(labels.cpu().numpy())
+            all_predictions.extend(predicted.cpu().numpy())
+            all_probabilities.extend(probabilities.cpu().numpy())
+            
+            # 진행률 표시
+            current_acc = 100. * (np.array(all_predictions) == np.array(all_labels)).mean()
             pbar.set_postfix({
                 'loss': running_loss / (batch_idx + 1),
-                'acc': 100. * correct / total
+                'acc': current_acc
             })
     
-    # 에포크 전체 통계 계산
-    avg_loss = running_loss / len(val_loader)
-    accuracy = 100. * correct / total
+    # numpy 배열로 변환
+    all_labels = np.array(all_labels)
+    all_predictions = np.array(all_predictions)
+    all_probabilities = np.array(all_probabilities)
     
-    # TensorBoard에 검증 메트릭 로깅
+    # 평가 지표 계산
+    avg_loss = running_loss / len(val_loader)
+    accuracy = 100. * (all_predictions == all_labels).mean()
+    
+    # Macro 평균 (모든 클래스 동등하게 취급)
+    recall = 100. * recall_score(all_labels, all_predictions, average='macro', zero_division=0)
+    precision = 100. * precision_score(all_labels, all_predictions, average='macro', zero_division=0)
+    f1 = 100. * f1_score(all_labels, all_predictions, average='macro', zero_division=0)
+    
+    # AUC-ROC 계산 (다중 클래스)
+    try:
+        # One-vs-Rest 방식으로 AUC 계산
+        n_classes = all_probabilities.shape[1]
+        all_labels_bin = label_binarize(all_labels, classes=range(n_classes))
+        auc_roc = roc_auc_score(all_labels_bin, all_probabilities, average='macro', multi_class='ovr')
+    except ValueError:
+        # 일부 클래스가 없는 경우 예외 처리
+        auc_roc = 0.0
+    
+    # TensorBoard에 메트릭 로깅
     if writer:
         writer.add_scalar('Loss/val', avg_loss, epoch)
         writer.add_scalar('Accuracy/val', accuracy, epoch)
+        writer.add_scalar('Recall/val', recall, epoch)
+        writer.add_scalar('Precision/val', precision, epoch)
+        writer.add_scalar('F1-Score/val', f1, epoch)
+        writer.add_scalar('AUC-ROC/val', auc_roc, epoch)
     
-    return avg_loss, accuracy
+    # 모든 메트릭을 딕셔너리로 반환
+    metrics = {
+        'loss': avg_loss,
+        'accuracy': accuracy,
+        'recall': recall,          # 주 평가 지표
+        'precision': precision,
+        'f1_score': f1,
+        'auc_roc': auc_roc
+    }
+    
+    return metrics
 
 
 def test(model, test_loader, device):
     """
-    테스트 데이터셋에서 최종 모델 성능을 평가하는 함수
+    테스트 데이터셋에서 최종 모델 성능을 평가하는 함수 (의료 AI 평가 지표 포함)
     
     학습이 완료된 후 모델의 일반화 성능을 측정하기 위해
     학습에 사용되지 않은 테스트 데이터셋에서 최종 평가를 수행합니다.
-    반환되는 예측값과 확률은 후속 분석(혼동 행렬, ROC 곡선 등)에 사용됩니다.
     
     Args:
         model (nn.Module): 평가할 학습된 신경망 모델
@@ -288,66 +334,71 @@ def test(model, test_loader, device):
         device (torch.device): 연산을 수행할 장치 (CPU 또는 GPU)
         
     Returns:
-        tuple: (정확도, 실제_레이블, 예측_레이블, 예측_확률)
-            - 정확도 (float): 테스트 데이터셋의 정확도 (0-100%)
-            - 실제_레이블 (list): 실제 클래스 레이블 리스트
-            - 예측_레이블 (list): 모델이 예측한 클래스 레이블 리스트
-            - 예측_확률 (list): 각 클래스에 대한 예측 확률 (softmax 출력)
-    
-    Note:
-        반환된 데이터는 다음과 같은 분석에 활용됩니다:
-        - 혼동 행렬 (Confusion Matrix) 생성
-        - 정밀도, 재현율, F1 점수 계산
-        - ROC 곡선 및 AUC 계산
-        - 클래스별 성능 분석
+        dict: 모든 평가 지표를 포함하는 딕셔너리
+            - accuracy: 정확도 (%)
+            - recall: Macro Recall (%) - 주 평가 지표
+            - precision: Macro Precision (%)
+            - f1_score: Macro F1-Score (%)
+            - auc_roc: Macro AUC-ROC (0~1)
+            - labels: 실제 레이블 리스트
+            - predictions: 예측 레이블 리스트
+            - probabilities: 예측 확률 리스트
     """
-    # 모델을 평가 모드로 설정
     model.eval()
     
-    # 통계 추적을 위한 변수 초기화
-    correct = 0  # 정확하게 예측한 샘플 수
-    total = 0    # 전체 샘플 수
+    all_labels = []
+    all_predictions = []
+    all_probabilities = []
     
-    # 결과 저장을 위한 리스트 초기화
-    all_labels = []        # 실제 레이블 저장
-    all_predictions = []   # 예측 레이블 저장
-    all_probabilities = [] # 예측 확률 저장 (각 클래스별)
-    
-    # 그래디언트 계산 비활성화
     with torch.no_grad():
-        # 진행률 표시 바 생성
         pbar = tqdm(test_loader, desc='Testing')
         
         for images, labels in pbar:
-            # 데이터를 지정된 장치로 이동
             images, labels = images.to(device), labels.to(device)
             
-            # 순전파 수행
             outputs = model(images)
-            
-            # Softmax를 적용하여 예측 확률 계산
-            # 로짓(logits)을 0-1 사이의 확률로 변환
             probabilities = torch.softmax(outputs, dim=1)
-            
-            # 가장 높은 확률을 가진 클래스를 예측 결과로 선택
             _, predicted = outputs.max(1)
             
-            # 통계 업데이트
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-            
-            # 결과를 리스트에 추가 (CPU로 이동 후 numpy 배열로 변환)
             all_labels.extend(labels.cpu().numpy())
             all_predictions.extend(predicted.cpu().numpy())
             all_probabilities.extend(probabilities.cpu().numpy())
             
-            # 진행률 표시 바에 현재 정확도 업데이트
-            pbar.set_postfix({'acc': 100. * correct / total})
+            current_acc = 100. * (np.array(all_predictions) == np.array(all_labels)).mean()
+            pbar.set_postfix({'acc': current_acc})
     
-    # 최종 정확도 계산
-    accuracy = 100. * correct / total
+    # numpy 배열로 변환
+    all_labels = np.array(all_labels)
+    all_predictions = np.array(all_predictions)
+    all_probabilities = np.array(all_probabilities)
     
-    return accuracy, all_labels, all_predictions, all_probabilities
+    # 평가 지표 계산
+    accuracy = 100. * (all_predictions == all_labels).mean()
+    recall = 100. * recall_score(all_labels, all_predictions, average='macro', zero_division=0)
+    precision = 100. * precision_score(all_labels, all_predictions, average='macro', zero_division=0)
+    f1 = 100. * f1_score(all_labels, all_predictions, average='macro', zero_division=0)
+    
+    # AUC-ROC 계산
+    try:
+        n_classes = all_probabilities.shape[1]
+        all_labels_bin = label_binarize(all_labels, classes=range(n_classes))
+        auc_roc = roc_auc_score(all_labels_bin, all_probabilities, average='macro', multi_class='ovr')
+    except ValueError:
+        auc_roc = 0.0
+    
+    # 모든 메트릭을 딕셔너리로 반환
+    test_metrics = {
+        'accuracy': accuracy,
+        'recall': recall,           # 주 평가 지표
+        'precision': precision,
+        'f1_score': f1,
+        'auc_roc': auc_roc,
+        'labels': all_labels,
+        'predictions': all_predictions,
+        'probabilities': all_probabilities
+    }
+    
+    return test_metrics
 
 
 def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, device=None):
@@ -402,19 +453,19 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     
     # 학습 설정 정보 출력
     print('='*80)
-    print(f'Training {model_name.upper()} Model')
+    print(f'{model_name.upper()} 모델 학습 시작')
     print('='*80)
-    print(f'Configuration:')
-    print(f'  Epochs: {epochs}')
-    print(f'  Batch size: {batch_size}')
-    print(f'  Learning rate: {learning_rate}')
-    print(f'  Device: {device}')
-    print(f'  Early stopping patience: {config.EARLY_STOPPING_PATIENCE}')
+    print(f'학습 설정:')
+    print(f'  에포크: {epochs}')
+    print(f'  배치 크기: {batch_size}')
+    print(f'  학습률: {learning_rate}')
+    print(f'  장치: {device}')
+    print(f'  조기 종료 인내심: {config.EARLY_STOPPING_PATIENCE}')
     print('='*80)
     
     # 데이터 로딩
     # 학습, 검증, 테스트 데이터 로더와 클래스 가중치를 반환받음
-    print('\nLoading data...')
+    print('\n데이터 로딩 중...')
     train_loader, val_loader, test_loader, class_weights = get_data_loaders(
         config.DATASET_DIR,
         batch_size=batch_size
@@ -467,12 +518,19 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         'val_acc': []       # 검증 정확도 기록
     }
     
+    # 체크포인트 관리자 초기화 (상위 3개 체크포인트만 유지)
+    checkpoint_manager = CheckpointManager(
+        save_dir=config.CHECKPOINT_DIR,
+        model_name=model_name,
+        max_checkpoints=3
+    )
+    
     # 최고 모델 추적을 위한 변수
-    best_val_acc = 0.0
+    best_val_recall = 0.0  # 최고 검증 Recall 추적
     best_model_wts = copy.deepcopy(model.state_dict())
     
     print('\n' + '='*80)
-    print('Starting training...')
+    print('학습 시작...')
     print('='*80)
     
     # 학습 시간 측정 시작
@@ -488,10 +546,18 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
             model, train_loader, criterion, optimizer, device, epoch, writer
         )
         
-        # 검증 단계
-        val_loss, val_acc = validate(
+        # 검증 단계 (의료 AI 평가 지표 포함)
+        val_metrics = validate(
             model, val_loader, criterion, device, epoch, writer
         )
+        
+        # 검증 메트릭 추출
+        val_loss = val_metrics['loss']
+        val_acc = val_metrics['accuracy']
+        val_recall = val_metrics['recall']      # 주 평가 지표
+        val_precision = val_metrics['precision']
+        val_f1 = val_metrics['f1_score']
+        val_auc = val_metrics['auc_roc']
         
         # 학습 기록 업데이트
         history['train_loss'].append(train_loss)
@@ -499,37 +565,49 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         history['val_loss'].append(val_loss)
         history['val_acc'].append(val_acc)
         
+        # 추가 메트릭 기록 (history에 키가 없으면 생성)
+        if 'val_recall' not in history:
+            history['val_recall'] = []
+            history['val_precision'] = []
+            history['val_f1'] = []
+            history['val_auc'] = []
+        history['val_recall'].append(val_recall)
+        history['val_precision'].append(val_precision)
+        history['val_f1'].append(val_f1)
+        history['val_auc'].append(val_auc)
+        
         # 학습률 스케줄러 업데이트
-        # 검증 정확도를 기준으로 학습률 조정 여부 결정
-        scheduler.step(val_acc)
+        # Recall을 기준으로 학습률 조정 (의료 AI에 적합)
+        scheduler.step(val_recall)
         current_lr = optimizer.param_groups[0]['lr']
         
-        # 에포크 결과 요약 출력
+        # 에포크 결과 요약 출력 (모든 평가 지표)
         print(f'\nEpoch {epoch} Summary:')
         print(f'  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%')
         print(f'  Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%')
+        print(f'  [Primary] Recall: {val_recall:.2f}% | Precision: {val_precision:.2f}%')
+        print(f'  F1-Score: {val_f1:.2f}% | AUC-ROC: {val_auc:.4f}')
         print(f'  Learning Rate: {current_lr:.2e}')
         
-        # 최고 성능 모델 저장
-        if val_acc > best_val_acc:
-            print(f'  [BEST] Validation accuracy improved from {best_val_acc:.2f}% to {val_acc:.2f}%')
-            best_val_acc = val_acc
+        # 최고 성능 모델 업데이트 (Recall 기준 - 주 평가 지표)
+        if val_recall > best_val_recall:
+            print(f'  [BEST] Recall improved from {best_val_recall:.2f}% to {val_recall:.2f}%')
+            best_val_recall = val_recall
             best_model_wts = copy.deepcopy(model.state_dict())
-            
-            # 체크포인트 파일로 저장
-            # 학습이 중단되더라도 최적 모델을 복원할 수 있음
-            checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f'{model_name}_best.pth')
-            save_checkpoint({
-                'epoch': epoch,                           # 저장 시점의 에포크
-                'model_name': model_name,                 # 모델 아키텍처 이름
-                'model_state_dict': model.state_dict(),   # 모델 가중치
-                'optimizer_state_dict': optimizer.state_dict(),  # 옵티마이저 상태
-                'best_val_acc': best_val_acc,             # 최고 검증 정확도
-                'history': history                        # 학습 기록
-            }, checkpoint_path)
         
-        # 조기 종료 체크
-        early_stopping(val_acc)
+        # 체크포인트 관리자를 통한 저장 (Recall 기준, 상위 3개만 유지)
+        checkpoint_manager.save({
+            'epoch': epoch,
+            'model_name': model_name,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'val_recall': val_recall,           # 주 평가 지표
+            'val_metrics': val_metrics,         # 모든 평가 지표
+            'history': history
+        }, val_recall, epoch)  # Recall 기준으로 저장
+        
+        # 조기 종료 체크 (Recall 기준)
+        early_stopping(val_recall)
         if early_stopping.early_stop:
             print(f'\nEarly stopping triggered after {epoch} epochs')
             break
@@ -537,26 +615,33 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     # 학습 완료
     training_time = time.time() - start_time
     print('\n' + '='*80)
-    print('Training completed!')
-    print(f'Total training time: {training_time / 60:.2f} minutes')
-    print(f'Best validation accuracy: {best_val_acc:.2f}%')
+    print('학습 완료!')
+    print(f'총 학습 시간: {training_time / 60:.2f}분')
+    print(f'최고 검증 Recall: {best_val_recall:.2f}%')
     print('='*80)
     
     # 최적 가중치로 모델 복원
     model.load_state_dict(best_model_wts)
     
     # 테스트 데이터셋에서 최종 평가
-    print('\nEvaluating on test set...')
-    test_acc, test_labels, test_preds, test_probs = test(model, test_loader, device)
-    print(f'Test Accuracy: {test_acc:.2f}%')
+    print('\n테스트 데이터셋 평가 중...')
+    test_metrics = test(model, test_loader, device)
+    
+    # 테스트 결과 출력
+    print(f'\n=== 테스트 결과 ===')
+    print(f'[주 지표] Recall: {test_metrics["recall"]:.2f}%')
+    print(f'Precision: {test_metrics["precision"]:.2f}%')
+    print(f'F1-Score: {test_metrics["f1_score"]:.2f}%')
+    print(f'Accuracy: {test_metrics["accuracy"]:.2f}%')
+    print(f'AUC-ROC: {test_metrics["auc_roc"]:.4f}')
     
     # 최종 체크포인트 저장 (테스트 결과 포함)
     final_checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f'{model_name}_final.pth')
     save_checkpoint({
         'model_name': model_name,
         'model_state_dict': model.state_dict(),
-        'best_val_acc': best_val_acc,
-        'test_acc': test_acc,
+        'best_val_recall': best_val_recall,
+        'test_metrics': test_metrics,  # 모든 테스트 평가 지표
         'history': history,
         'training_time': training_time
     }, final_checkpoint_path)
@@ -564,7 +649,7 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     # TensorBoard writer 종료
     writer.close()
     
-    return model, history, test_acc
+    return model, history, test_metrics
 
 
 def main():
