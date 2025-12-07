@@ -36,7 +36,7 @@ class VGG16Model(nn.Module):
             nn.Linear(4096, num_classes)
         )
         
-        # 선택적으로 백본 동결
+        # 선택적으로 백본 동결(사전 학습된 파라미터를 그대로 가지고 가기 위해)
         if config.FREEZE_BACKBONE:
             for param in self.vgg16.features.parameters():
                 param.requires_grad = False
@@ -47,8 +47,6 @@ class VGG16Model(nn.Module):
 
 def get_vgg16_model(num_classes=None, pretrained=True, dropout=None):
     """
-    VGG16 모델 인스턴스 가져오기
-    
     Args:
         num_classes (int, optional): 출력 클래스 수
         pretrained (bool): ImageNet 사전학습 가중치 사용 여부
