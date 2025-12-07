@@ -360,12 +360,17 @@ def test(model, test_loader, device):
             - labels: 실제 레이블 리스트
             - predictions: 예측 레이블 리스트
             - probabilities: 예측 확률 리스트
+            - inference_time: 총 추론 시간 (초)
+            - inference_time_per_sample: 샘플당 평균 추론 시간 (밀리초)
     """
     model.eval()
     
     all_labels = []
     all_predictions = []
     all_probabilities = []
+    
+    # 추론 시간 측정 시작
+    inference_start = time.time()
     
     with torch.no_grad():
         pbar = tqdm(test_loader, desc='Testing')
@@ -383,6 +388,11 @@ def test(model, test_loader, device):
             
             current_acc = 100. * (np.array(all_predictions) == np.array(all_labels)).mean()
             pbar.set_postfix({'acc': current_acc})
+    
+    # 추론 시간 측정 종료
+    inference_time = time.time() - inference_start
+    num_samples = len(all_labels)
+    inference_time_per_sample = (inference_time / num_samples) * 1000  # 밀리초
     
     # numpy 배열로 변환
     all_labels = np.array(all_labels)
@@ -410,6 +420,9 @@ def test(model, test_loader, device):
         'precision': precision,
         'f1_score': f1,
         'auc_roc': auc_roc,
+        'inference_time': inference_time,  # 총 추론 시간 (초)
+        'inference_time_per_sample_ms': inference_time_per_sample,  # 샘플당 추론 시간 (밀리초)
+        'num_test_samples': num_samples,
         'labels': all_labels,
         'predictions': all_predictions,
         'probabilities': all_probabilities
@@ -601,6 +614,7 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     
     # 최고 모델 추적을 위한 변수
     best_val_recall = 0.0  # 최고 검증 Recall 추적
+    best_epoch = 0         # 최고 성능 에포크 번호
     best_model_wts = copy.deepcopy(model.state_dict())
     
     print('\n' + '='*80)
@@ -701,6 +715,7 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         if val_recall > best_val_recall:
             print(f'  [BEST] Recall improved from {best_val_recall:.2f}% to {val_recall:.2f}%')
             best_val_recall = val_recall
+            best_epoch = epoch
             best_model_wts = copy.deepcopy(model.state_dict())
         
         # 체크포인트 관리자를 통한 저장 (Recall 기준, 상위 3개만 유지)
@@ -757,19 +772,91 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     
     # 학습 로그를 JSON 형식으로 저장 (시각화용)
     import json
+    from sklearn.metrics import classification_report
+    
+    # 클래스별 테스트 결과 계산
+    class_names = ['COVID-19', 'Normal', 'Viral Pneumonia']
+    per_class_report = classification_report(
+        test_metrics['labels'], 
+        test_metrics['predictions'], 
+        target_names=class_names, 
+        output_dict=True,
+        zero_division=0
+    )
+    
+    # GPU 정보 수집
+    gpu_info = None
+    if torch.cuda.is_available():
+        gpu_info = {
+            'name': torch.cuda.get_device_name(0),
+            'memory_allocated_mb': torch.cuda.memory_allocated(0) / 1024**2,
+            'memory_reserved_mb': torch.cuda.memory_reserved(0) / 1024**2
+        }
+    
     training_log = {
         'model_name': model_name,
         'session_timestamp': checkpoint_manager.session_timestamp,
-        'training_time_minutes': training_time / 60,
-        'epochs_trained': len(history['train_loss']),
-        'best_val_recall': best_val_recall,
+        
+        # 학습 요약
+        'training_summary': {
+            'training_time_minutes': training_time / 60,
+            'epochs_trained': len(history['train_loss']),
+            'best_epoch': best_epoch,
+            'stop_epoch': epoch,  # Early Stopping으로 종료된 에포크
+            'early_stopping_patience': config.EARLY_STOPPING_PATIENCE,
+            'best_val_recall': best_val_recall
+        },
+        
+        # 데이터셋 정보
+        'dataset_info': {
+            'train_samples': len(train_loader.dataset),
+            'val_samples': len(val_loader.dataset),
+            'test_samples': len(test_loader.dataset),
+            'num_classes': config.NUM_CLASSES,
+            'class_names': class_names,
+            'batch_size': batch_size
+        },
+        
+        # 모델 정보
+        'model_info': {
+            'architecture': model_name,
+            'total_params': count_parameters(model),
+            'trainable_params': sum(p.numel() for p in model.parameters() if p.requires_grad),
+            'frozen_params': sum(p.numel() for p in model.parameters() if not p.requires_grad)
+        },
+        
+        # GPU 정보
+        'gpu_info': gpu_info,
+        
+        # 재현성
+        'reproducibility': {
+            'random_seed': config.RANDOM_SEED,
+            'cuda_deterministic': True
+        },
+        
+        # 테스트 메트릭 (전체)
         'test_metrics': {
             'accuracy': test_metrics['accuracy'],
             'recall': test_metrics['recall'],
             'precision': test_metrics['precision'],
             'f1_score': test_metrics['f1_score'],
-            'auc_roc': test_metrics['auc_roc']
+            'auc_roc': test_metrics['auc_roc'],
+            'inference_time_seconds': test_metrics['inference_time'],
+            'inference_time_per_sample_ms': test_metrics['inference_time_per_sample_ms'],
+            'num_test_samples': test_metrics['num_test_samples']
         },
+        
+        # 클래스별 테스트 결과
+        'per_class_metrics': {
+            class_name: {
+                'precision': per_class_report[class_name]['precision'] * 100,
+                'recall': per_class_report[class_name]['recall'] * 100,
+                'f1_score': per_class_report[class_name]['f1-score'] * 100,
+                'support': per_class_report[class_name]['support']
+            } for class_name in class_names
+        },
+        
+        # 하이퍼파라미터
         'hyperparameters': {
             'batch_size': batch_size,
             'learning_rate': learning_rate,
@@ -780,11 +867,12 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
             'label_smoothing': config.LABEL_SMOOTHING,
             'gradient_clip': config.GRADIENT_CLIP_NORM
         },
+        
+        # 학습 히스토리
         'history': {
             # 메타정보: 배치 수를 알면 에포크별 데이터 복원 가능
             'batches_per_epoch': len(train_loader),
             # train: 배치 단위 (모든 배치를 flat 리스트로 저장)
-            # 에포크 N의 데이터: train[metric][(N-1)*batches_per_epoch : N*batches_per_epoch]
             'train': {
                 'loss': [v for epoch_batch in history.get('train_batch', []) for v in epoch_batch['loss']],
                 'acc': [v for epoch_batch in history.get('train_batch', []) for v in epoch_batch['accuracy']],
@@ -809,6 +897,389 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     with open(log_path, 'w', encoding='utf-8') as f:
         json.dump(training_log, f, indent=2, ensure_ascii=False)
     print(f'학습 로그 저장됨: {log_path}')
+    
+    # ========================================
+    # 시각화 플롯 생성 및 저장 (개선 버전)
+    # ========================================
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import confusion_matrix
+    import seaborn as sns
+    
+    # 스타일 설정
+    plt.rcParams['font.family'] = 'DejaVu Sans'
+    plt.rcParams['axes.unicode_minus'] = False
+    plt.rcParams['font.size'] = 10
+    
+    # 색상 팔레트 정의
+    COLORS = {
+        'train': '#3498db',      # 파랑
+        'val': '#e74c3c',        # 빨강
+        'best': '#f39c12',       # 주황
+        'recall': '#9b59b6',     # 보라
+        'precision': '#1abc9c',  # 청록
+        'f1': '#34495e',         # 진회색
+    }
+    
+    # 플롯 저장 폴더 생성
+    plot_dir = os.path.join(checkpoint_manager.save_dir, 'plots')
+    os.makedirs(plot_dir, exist_ok=True)
+    timestamp = checkpoint_manager.session_timestamp
+    epochs_range = range(1, len(history['train_loss']) + 1)
+    
+    # ------------------------------------------
+    # 1. Loss 곡선 (Train: 실선, Val: 점선)
+    # ------------------------------------------
+    plt.figure(figsize=(12, 6))
+    plt.plot(epochs_range, history['train_loss'], '-', color=COLORS['train'], 
+             label='Train Loss', linewidth=2)
+    plt.plot(epochs_range, history['val_loss'], '--', color=COLORS['val'], 
+             label='Val Loss', linewidth=2, marker='o', markersize=4)
+    plt.axvline(x=best_epoch, color=COLORS['best'], linestyle=':', 
+                label=f'Best Epoch ({best_epoch})', linewidth=2)
+    plt.scatter([best_epoch], [history['val_loss'][best_epoch-1]], 
+                color=COLORS['best'], s=100, zorder=5, marker='o')
+    plt.fill_between(epochs_range, history['train_loss'], history['val_loss'], 
+                     alpha=0.1, color='gray')
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Loss', fontsize=12)
+    plt.title(f'{model_name} - Training & Validation Loss', fontsize=14, fontweight='bold')
+    plt.legend(loc='upper right', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_loss_curve.png'), dpi=150)
+    plt.close()
+    
+    # ------------------------------------------
+    # 2. Accuracy 곡선 (Train: 실선, Val: 점선)
+    # ------------------------------------------
+    plt.figure(figsize=(12, 6))
+    plt.plot(epochs_range, history['train_acc'], '-', color=COLORS['train'], 
+             label='Train Acc', linewidth=2)
+    plt.plot(epochs_range, history['val_acc'], '--', color=COLORS['val'], 
+             label='Val Acc', linewidth=2, marker='o', markersize=4)
+    plt.axvline(x=best_epoch, color=COLORS['best'], linestyle=':', 
+                label=f'Best Epoch ({best_epoch})', linewidth=2)
+    plt.scatter([best_epoch], [history['val_acc'][best_epoch-1]], 
+                color=COLORS['best'], s=100, zorder=5, marker='o')
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Accuracy (%)', fontsize=12)
+    plt.title(f'{model_name} - Training & Validation Accuracy', fontsize=14, fontweight='bold')
+    plt.legend(loc='lower right', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_accuracy_curve.png'), dpi=150)
+    plt.close()
+    
+    # ------------------------------------------
+    # 3. 배치별 Loss 곡선
+    # ------------------------------------------
+    if history.get('train_batch'):
+        batch_loss = [v for eb in history['train_batch'] for v in eb['loss']]
+        batch_steps = range(1, len(batch_loss) + 1)
+        batches_per_epoch = len(train_loader)
+        num_epochs = len(history['train_loss'])
+        epoch_ticks = [e * batches_per_epoch for e in range(1, num_epochs + 1)]
+        
+        plt.figure(figsize=(14, 6))
+        plt.plot(batch_steps, batch_loss, '-', color=COLORS['train'], 
+                 alpha=0.5, linewidth=1, label='Train (Batch)')
+        
+        # Val Loss 에포크별 표시 (에포크 끝 지점에 마커)
+        val_losses = history['val_loss']
+        val_positions = epoch_ticks
+        plt.scatter(val_positions, val_losses, color=COLORS['val'], s=50, zorder=5, marker='o')
+        plt.plot(val_positions, val_losses, '--', color=COLORS['val'], linewidth=2, label='Val (Epoch)', marker='o', markersize=4)
+        
+        # 에포크 구분선 및 X축 눈금
+        for e_tick in epoch_ticks:
+            plt.axvline(x=e_tick, color='gray', linestyle=':', alpha=0.3)
+        plt.xticks(epoch_ticks, [f'{e}' for e in range(1, num_epochs + 1)])
+        
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.title(f'{model_name} - Training Loss (Train: Batch, Val: Epoch)', fontsize=14, fontweight='bold')
+        plt.legend(loc='upper right', fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_batch_loss.png'), dpi=150)
+        plt.close()
+    
+    # ------------------------------------------
+    # 4. 배치별 Recall 곡선
+    # ------------------------------------------
+    if history.get('train_batch'):
+        batch_recall = [v for eb in history['train_batch'] for v in eb['recall']]
+        
+        plt.figure(figsize=(14, 6))
+        plt.plot(batch_steps, batch_recall, '-', color=COLORS['train'], 
+                 alpha=0.5, linewidth=1, label='Train (Batch)')
+        
+        # Val Recall 에포크별 표시
+        val_recalls = history.get('val_recall', [])
+        if val_recalls:
+            plt.scatter(val_positions, val_recalls, color=COLORS['val'], s=50, zorder=5, marker='o')
+            plt.plot(val_positions, val_recalls, '--', color=COLORS['val'], linewidth=2, label='Val (Epoch)', marker='o', markersize=4)
+        
+        # Test Recall 수평선
+        plt.axhline(y=test_metrics['recall'], color='green', linestyle='-.', 
+                   linewidth=2, label=f"Test(Ep{best_epoch}): {test_metrics['recall']:.1f}%")
+        
+        # 에포크 구분선 및 X축 눈금
+        for e_tick in epoch_ticks:
+            plt.axvline(x=e_tick, color='gray', linestyle=':', alpha=0.3)
+        plt.xticks(epoch_ticks, [f'{e}' for e in range(1, num_epochs + 1)])
+        
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Recall (%)', fontsize=12)
+        plt.title(f'{model_name} - Training Recall (Train: Batch, Val: Epoch)', fontsize=14, fontweight='bold')
+        plt.legend(loc='lower right', fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_batch_recall.png'), dpi=150)
+        plt.close()
+    
+    # ------------------------------------------
+    # 5. AUC-ROC 변화 곡선 (신규)
+    # ------------------------------------------
+    if history.get('val_auc'):
+        plt.figure(figsize=(10, 6))
+        plt.plot(epochs_range, history['val_auc'], '-', color=COLORS['val'], 
+                 linewidth=2, marker='o', markersize=4, label='Val AUC-ROC')
+        plt.axhline(y=0.5, color='gray', linestyle='--', label='Random (0.5)', alpha=0.7)
+        plt.axhline(y=0.8, color='green', linestyle=':', label='Good (0.8)', alpha=0.5)
+        plt.axhline(y=0.9, color='blue', linestyle=':', label='Excellent (0.9)', alpha=0.5)
+        plt.fill_between(epochs_range, 0.5, history['val_auc'], alpha=0.2, color=COLORS['val'])
+        plt.axvline(x=best_epoch, color=COLORS['best'], linestyle=':', linewidth=2)
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('AUC-ROC', fontsize=12)
+        plt.ylim(0.4, 1.0)
+        plt.title(f'{model_name} - AUC-ROC Curve', fontsize=14, fontweight='bold')
+        plt.legend(loc='lower right', fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_auc_curve.png'), dpi=150)
+        plt.close()
+    
+    # ------------------------------------------
+    # 6. Metrics Grid (2x2 서브플롯)
+    # ------------------------------------------
+    if history.get('val_recall'):
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        
+        # 6-1. Recall
+        if history.get('train_recall'):
+            axes[0, 0].plot(epochs_range, history['train_recall'], '-', 
+                           color=COLORS['train'], linewidth=2, label='Train')
+        axes[0, 0].plot(epochs_range, history['val_recall'], '--', 
+                       color=COLORS['val'], linewidth=2, label='Val', marker='o', markersize=3)
+        axes[0, 0].axhline(y=test_metrics['recall'], color='green', linestyle='-.', 
+                          linewidth=1.5, label=f"Test(Ep{best_epoch}): {test_metrics['recall']:.1f}%")
+        axes[0, 0].axvline(x=best_epoch, color=COLORS['best'], linestyle=':', alpha=0.7)
+        axes[0, 0].set_title('Recall (%)', fontsize=12, fontweight='bold')
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].legend(fontsize=8)
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # 6-2. Precision
+        if history.get('train_precision'):
+            axes[0, 1].plot(epochs_range, history['train_precision'], '-', 
+                           color=COLORS['train'], linewidth=2, label='Train')
+        axes[0, 1].plot(epochs_range, history['val_precision'], '--', 
+                       color=COLORS['val'], linewidth=2, label='Val', marker='o', markersize=3)
+        axes[0, 1].axhline(y=test_metrics['precision'], color='green', linestyle='-.', 
+                          linewidth=1.5, label=f"Test(Ep{best_epoch}): {test_metrics['precision']:.1f}%")
+        axes[0, 1].axvline(x=best_epoch, color=COLORS['best'], linestyle=':', alpha=0.7)
+        axes[0, 1].set_title('Precision (%)', fontsize=12, fontweight='bold')
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].legend(fontsize=8)
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # 6-3. F1-Score
+        if history.get('train_f1'):
+            axes[1, 0].plot(epochs_range, history['train_f1'], '-', 
+                           color=COLORS['train'], linewidth=2, label='Train')
+        axes[1, 0].plot(epochs_range, history['val_f1'], '--', 
+                       color=COLORS['val'], linewidth=2, label='Val', marker='o', markersize=3)
+        axes[1, 0].axhline(y=test_metrics['f1_score'], color='green', linestyle='-.', 
+                          linewidth=1.5, label=f"Test(Ep{best_epoch}): {test_metrics['f1_score']:.1f}%")
+        axes[1, 0].axvline(x=best_epoch, color=COLORS['best'], linestyle=':', alpha=0.7)
+        axes[1, 0].set_title('F1-Score (%)', fontsize=12, fontweight='bold')
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].legend(fontsize=8)
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # 6-4. 모든 Val 지표 비교 (Test 수평선 없음)
+        axes[1, 1].plot(epochs_range, history['val_recall'], '--', 
+                       color=COLORS['recall'], linewidth=2, label='Recall', marker='o', markersize=3)
+        axes[1, 1].plot(epochs_range, history['val_precision'], '--', 
+                       color=COLORS['precision'], linewidth=2, label='Precision', marker='s', markersize=3)
+        axes[1, 1].plot(epochs_range, history['val_f1'], '--', 
+                       color=COLORS['f1'], linewidth=2, label='F1-Score', marker='^', markersize=3)
+        axes[1, 1].axvline(x=best_epoch, color=COLORS['best'], linestyle=':', alpha=0.7)
+        axes[1, 1].set_title('All Validation Metrics', fontsize=12, fontweight='bold')
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].legend(fontsize=8)
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        plt.suptitle(f'{model_name} - Metrics Grid', fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_metrics_grid.png'), dpi=150)
+        plt.close()
+    
+    # ------------------------------------------
+    # 7. Confusion Matrix (개선)
+    # ------------------------------------------
+    cm = confusion_matrix(test_metrics['labels'], test_metrics['predictions'])
+    cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(cm, annot=False, cmap='Blues', ax=ax,
+                xticklabels=class_names, yticklabels=class_names)
+    
+    # 값 표시 (정수 + 백분율)
+    for i in range(len(class_names)):
+        for j in range(len(class_names)):
+            text = f'{cm[i, j]}\n({cm_normalized[i, j]:.1f}%)'
+            color = 'white' if cm[i, j] > cm.max()/2 else 'black'
+            ax.text(j + 0.5, i + 0.5, text, ha='center', va='center', 
+                   fontsize=11, color=color, fontweight='bold')
+    
+    ax.set_xlabel('Predicted', fontsize=12)
+    ax.set_ylabel('Actual', fontsize=12)
+    ax.set_title(f'{model_name} - Confusion Matrix (Test Set)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_confusion_matrix.png'), dpi=150)
+    plt.close()
+    
+    # ------------------------------------------
+    # 8. 클래스별 성능 바 차트 (개선)
+    # ------------------------------------------
+    plt.figure(figsize=(12, 6))
+    x = np.arange(len(class_names))
+    width = 0.25
+    
+    recall_vals = [per_class_report[c]['recall'] * 100 for c in class_names]
+    precision_vals = [per_class_report[c]['precision'] * 100 for c in class_names]
+    f1_vals = [per_class_report[c]['f1-score'] * 100 for c in class_names]
+    
+    bars1 = plt.bar(x - width, recall_vals, width, label='Recall', color=COLORS['recall'])
+    bars2 = plt.bar(x, precision_vals, width, label='Precision', color=COLORS['precision'])
+    bars3 = plt.bar(x + width, f1_vals, width, label='F1-Score', color=COLORS['f1'])
+    
+    # 값 표시
+    for bars in [bars1, bars2, bars3]:
+        for bar in bars:
+            height = bar.get_height()
+            plt.annotate(f'{height:.1f}%', xy=(bar.get_x() + bar.get_width()/2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    plt.xlabel('Class', fontsize=12)
+    plt.ylabel('Score (%)', fontsize=12)
+    plt.title(f'{model_name} - Per-Class Performance (Test Set)', fontsize=14, fontweight='bold')
+    plt.xticks(x, class_names)
+    plt.legend(loc='upper right', fontsize=10)
+    plt.ylim(0, 110)
+    plt.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_per_class.png'), dpi=150)
+    plt.close()
+    
+    # ------------------------------------------
+    # 9. Dashboard (개선된 종합 대시보드)
+    # ------------------------------------------
+    fig = plt.figure(figsize=(16, 12))
+    
+    # 9-1. Loss (좌상단)
+    ax1 = fig.add_subplot(2, 3, 1)
+    ax1.plot(epochs_range, history['train_loss'], '-', color=COLORS['train'], linewidth=2, label='Train')
+    ax1.plot(epochs_range, history['val_loss'], '--', color=COLORS['val'], linewidth=2, label='Val', marker='o', markersize=3)
+    ax1.axvline(x=best_epoch, color=COLORS['best'], linestyle=':', alpha=0.7)
+    ax1.set_title('Loss', fontweight='bold')
+    ax1.set_xlabel('Epoch')
+    ax1.legend(fontsize=8)
+    ax1.grid(True, alpha=0.3)
+    
+    # 9-2. Accuracy (중앙상단)
+    ax2 = fig.add_subplot(2, 3, 2)
+    ax2.plot(epochs_range, history['train_acc'], '-', color=COLORS['train'], linewidth=2, label='Train')
+    ax2.plot(epochs_range, history['val_acc'], '--', color=COLORS['val'], linewidth=2, label='Val', marker='o', markersize=3)
+    ax2.axhline(y=test_metrics['accuracy'], color='green', linestyle='-.', linewidth=2, label=f"Test(Ep{best_epoch}): {test_metrics['accuracy']:.1f}%")
+    ax2.axvline(x=best_epoch, color=COLORS['best'], linestyle=':', alpha=0.7, label=f'Best: Ep{best_epoch}')
+    ax2.set_title('Accuracy (%)', fontweight='bold')
+    ax2.set_xlabel('Epoch')
+    ax2.legend(fontsize=7, loc='lower right')
+    ax2.grid(True, alpha=0.3)
+    
+    # 9-3. Val Metrics (우상단)
+    ax3 = fig.add_subplot(2, 3, 3)
+    if history.get('val_recall'):
+        ax3.plot(epochs_range, history['val_recall'], '--', color=COLORS['recall'], linewidth=2, label=f'Val Recall', marker='o', markersize=3)
+        ax3.plot(epochs_range, history['val_precision'], '--', color=COLORS['precision'], linewidth=2, label=f'Val Precision', marker='s', markersize=3)
+        ax3.plot(epochs_range, history['val_f1'], '--', color=COLORS['f1'], linewidth=2, label=f'Val F1', marker='^', markersize=3)
+    # Test 결과 수평선 추가 (범례에 값 포함)
+    ax3.axhline(y=test_metrics['recall'], color=COLORS['recall'], linestyle='-.', linewidth=1.5, alpha=0.7, label=f"Test R: {test_metrics['recall']:.1f}%")
+    ax3.axhline(y=test_metrics['precision'], color=COLORS['precision'], linestyle='-.', linewidth=1.5, alpha=0.7, label=f"Test P: {test_metrics['precision']:.1f}%")
+    ax3.axhline(y=test_metrics['f1_score'], color=COLORS['f1'], linestyle='-.', linewidth=1.5, alpha=0.7, label=f"Test F1: {test_metrics['f1_score']:.1f}%")
+    ax3.axvline(x=best_epoch, color=COLORS['best'], linestyle=':', alpha=0.7)
+    ax3.set_title(f'Val Metrics (Best: Ep{best_epoch})', fontweight='bold')
+    ax3.set_xlabel('Epoch')
+    ax3.legend(fontsize=6, loc='lower right', ncol=2)
+    ax3.grid(True, alpha=0.3)
+    
+    # 9-4. Confusion Matrix (좌하단)
+    ax4 = fig.add_subplot(2, 3, 4)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax4,
+                xticklabels=class_names, yticklabels=class_names, cbar=False)
+    ax4.set_title('Confusion Matrix', fontweight='bold')
+    ax4.set_xlabel('Predicted')
+    ax4.set_ylabel('Actual')
+    
+    # 9-5. Per-Class Bar (중앙하단)
+    ax5 = fig.add_subplot(2, 3, 5)
+    x = np.arange(len(class_names))
+    ax5.bar(x - 0.2, recall_vals, 0.2, label='Recall', color=COLORS['recall'])
+    ax5.bar(x, precision_vals, 0.2, label='Precision', color=COLORS['precision'])
+    ax5.bar(x + 0.2, f1_vals, 0.2, label='F1', color=COLORS['f1'])
+    ax5.set_xticks(x)
+    ax5.set_xticklabels(class_names, fontsize=8)
+    ax5.set_title('Per-Class Performance', fontweight='bold')
+    ax5.legend(fontsize=7)
+    ax5.grid(True, alpha=0.3, axis='y')
+    
+    # 9-6. Summary Text (우하단)
+    ax6 = fig.add_subplot(2, 3, 6)
+    ax6.axis('off')
+    summary_text = f"""
+═══════════════════════════
+     TEST RESULTS
+═══════════════════════════
+  Accuracy:   {test_metrics['accuracy']:.2f}%
+  Recall:     {test_metrics['recall']:.2f}%
+  Precision:  {test_metrics['precision']:.2f}%
+  F1-Score:   {test_metrics['f1_score']:.2f}%
+  AUC-ROC:    {test_metrics['auc_roc']:.4f}
+
+═══════════════════════════
+     TRAINING INFO
+═══════════════════════════
+  Best Epoch:      {best_epoch}
+  Stop Epoch:      {epoch}
+  Training Time:   {training_time/60:.2f} min
+  Best Val Recall: {best_val_recall:.2f}%
+  
+  Inference: {test_metrics['inference_time_per_sample_ms']:.1f} ms/sample
+"""
+    ax6.text(0.05, 0.5, summary_text, fontsize=11, family='monospace',
+             verticalalignment='center', transform=ax6.transAxes,
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.suptitle(f'{model_name} - Training Summary Dashboard', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, f'{model_name}_{timestamp}_dashboard.png'), dpi=150)
+    plt.close()
+    
+    print(f'시각화 플롯 저장됨: {plot_dir}')
     
     # TensorBoard writer 종료
     writer.close()
