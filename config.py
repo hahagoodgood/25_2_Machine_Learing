@@ -117,7 +117,7 @@ import os as _os
 _os.environ['CUDA_VISIBLE_DEVICES'] = '1'  # 1번 GPU만 사용
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-NUM_WORKERS = 16  # 데이터 로딩에 사용할 워커 수
+NUM_WORKERS = 32  # 데이터 로딩에 사용할 워커 수
 
 # ========================
 # 로깅 설정

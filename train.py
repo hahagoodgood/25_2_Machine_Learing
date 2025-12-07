@@ -142,7 +142,16 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, wr
     all_labels = []
     all_predictions = []
     
-    pbar = tqdm(train_loader, desc=f'Epoch {epoch} [Train]')
+    # 배치별 메트릭 기록
+    batch_metrics = {
+        'loss': [],
+        'accuracy': [],
+        'recall': [],
+        'precision': [],
+        'f1_score': []
+    }
+    
+    pbar = tqdm(train_loader, desc=f'Epoch {epoch} [Train]', leave=False)
     
     for batch_idx, (images, labels) in enumerate(pbar):
         images, labels = images.to(device), labels.to(device)
@@ -164,22 +173,34 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, wr
         all_labels.extend(labels.cpu().numpy())
         all_predictions.extend(predicted.cpu().numpy())
         
-        current_acc = 100. * (np.array(all_predictions) == np.array(all_labels)).mean()
+        # 배치별 메트릭 계산 및 기록
+        batch_labels = np.array(all_labels)
+        batch_preds = np.array(all_predictions)
+        
+        batch_loss = running_loss / (batch_idx + 1)
+        batch_acc = 100. * (batch_preds == batch_labels).mean()
+        batch_recall = 100. * recall_score(batch_labels, batch_preds, average='macro', zero_division=0)
+        batch_precision = 100. * precision_score(batch_labels, batch_preds, average='macro', zero_division=0)
+        batch_f1 = 100. * f1_score(batch_labels, batch_preds, average='macro', zero_division=0)
+        
+        batch_metrics['loss'].append(batch_loss)
+        batch_metrics['accuracy'].append(batch_acc)
+        batch_metrics['recall'].append(batch_recall)
+        batch_metrics['precision'].append(batch_precision)
+        batch_metrics['f1_score'].append(batch_f1)
+        
         pbar.set_postfix({
-            'loss': running_loss / (batch_idx + 1),
-            'acc': current_acc
+            'loss': batch_loss,
+            'acc': batch_acc,
+            'recall': batch_recall
         })
     
-    # numpy 배열로 변환
-    all_labels = np.array(all_labels)
-    all_predictions = np.array(all_predictions)
-    
-    # 평가 지표 계산
-    avg_loss = running_loss / len(train_loader)
-    accuracy = 100. * (all_predictions == all_labels).mean()
-    recall = 100. * recall_score(all_labels, all_predictions, average='macro', zero_division=0)
-    precision = 100. * precision_score(all_labels, all_predictions, average='macro', zero_division=0)
-    f1 = 100. * f1_score(all_labels, all_predictions, average='macro', zero_division=0)
+    # 에포크 전체 통계 (마지막 배치 기준)
+    avg_loss = batch_metrics['loss'][-1]
+    accuracy = batch_metrics['accuracy'][-1]
+    recall = batch_metrics['recall'][-1]
+    precision = batch_metrics['precision'][-1]
+    f1 = batch_metrics['f1_score'][-1]
     
     # TensorBoard에 학습 메트릭 로깅
     if writer:
@@ -189,13 +210,14 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, wr
         writer.add_scalar('Precision/train', precision, epoch)
         writer.add_scalar('F1-Score/train', f1, epoch)
     
-    # 모든 메트릭을 딕셔너리로 반환
+    # 에포크 요약 및 배치별 메트릭 반환
     metrics = {
         'loss': avg_loss,
         'accuracy': accuracy,
         'recall': recall,
         'precision': precision,
-        'f1_score': f1
+        'f1_score': f1,
+        'batch_metrics': batch_metrics  # 배치별 상세 기록
     }
     
     return metrics
@@ -600,12 +622,13 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
             model, train_loader, criterion, optimizer, device, epoch, writer
         )
         
-        # 학습 메트릭 추출
+        # 학습 메트릭 추출 (에포크 요약)
         train_loss = train_metrics['loss']
         train_acc = train_metrics['accuracy']
         train_recall = train_metrics['recall']
         train_precision = train_metrics['precision']
         train_f1 = train_metrics['f1_score']
+        train_batch_metrics = train_metrics['batch_metrics']  # 배치별 상세 기록
         
         # 검증 단계 (의료 AI 평가 지표 포함)
         val_metrics = validate(
@@ -621,6 +644,7 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         val_auc = val_metrics['auc_roc']
         
         # 학습 기록 업데이트
+        # 에포크 단위 요약값 (val과 비교용)
         history['train_loss'].append(train_loss)
         history['train_acc'].append(train_acc)
         history['val_loss'].append(val_loss)
@@ -631,6 +655,7 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
             history['train_recall'] = []
             history['train_precision'] = []
             history['train_f1'] = []
+            history['train_batch'] = []  # 배치별 상세 기록
             history['val_recall'] = []
             history['val_precision'] = []
             history['val_f1'] = []
@@ -638,6 +663,7 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         history['train_recall'].append(train_recall)
         history['train_precision'].append(train_precision)
         history['train_f1'].append(train_f1)
+        history['train_batch'].append(train_batch_metrics)  # 에포크별 배치 기록
         history['val_recall'].append(val_recall)
         history['val_precision'].append(val_precision)
         history['val_f1'].append(val_f1)
@@ -755,17 +781,26 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
             'gradient_clip': config.GRADIENT_CLIP_NORM
         },
         'history': {
-            'train_loss': history['train_loss'],
-            'train_acc': history['train_acc'],
-            'train_recall': history.get('train_recall', []),
-            'train_precision': history.get('train_precision', []),
-            'train_f1': history.get('train_f1', []),
-            'val_loss': history['val_loss'],
-            'val_acc': history['val_acc'],
-            'val_recall': history.get('val_recall', []),
-            'val_precision': history.get('val_precision', []),
-            'val_f1': history.get('val_f1', []),
-            'val_auc': history.get('val_auc', [])
+            # 메타정보: 배치 수를 알면 에포크별 데이터 복원 가능
+            'batches_per_epoch': len(train_loader),
+            # train: 배치 단위 (모든 배치를 flat 리스트로 저장)
+            # 에포크 N의 데이터: train[metric][(N-1)*batches_per_epoch : N*batches_per_epoch]
+            'train': {
+                'loss': [v for epoch_batch in history.get('train_batch', []) for v in epoch_batch['loss']],
+                'acc': [v for epoch_batch in history.get('train_batch', []) for v in epoch_batch['accuracy']],
+                'recall': [v for epoch_batch in history.get('train_batch', []) for v in epoch_batch['recall']],
+                'precision': [v for epoch_batch in history.get('train_batch', []) for v in epoch_batch['precision']],
+                'f1': [v for epoch_batch in history.get('train_batch', []) for v in epoch_batch['f1_score']]
+            },
+            # val: 에포크 단위
+            'val': {
+                'loss': history['val_loss'],
+                'acc': history['val_acc'],
+                'recall': history.get('val_recall', []),
+                'precision': history.get('val_precision', []),
+                'f1': history.get('val_f1', []),
+                'auc': history.get('val_auc', [])
+            }
         }
     }
     

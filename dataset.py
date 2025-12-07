@@ -283,7 +283,7 @@ if __name__ == '__main__':
     print('Testing dataset loader...\n')
     train_loader, val_loader, test_loader, class_weights = get_data_loaders(
         config.DATASET_DIR,
-        batch_size=4
+        batch_size=config.BATCH_SIZE
     )
     
     # 훈련 로더에서 배치 가져오기
