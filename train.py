@@ -114,100 +114,91 @@ class EarlyStopping:
 
 def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, writer=None):
     """
-    한 에포크(Epoch) 동안 모델을 학습시키는 함수
+    한 에포크 동안 모델을 학습시키는 함수 (모든 평가 지표 포함)
     
-    에포크는 전체 학습 데이터셋을 한 번 완전히 순회하는 것을 의미합니다.
     이 함수에서는 순전파(Forward Pass), 손실 계산, 역전파(Backward Pass),
     가중치 업데이트의 전체 학습 과정을 수행합니다.
     
     Args:
-        model (nn.Module): 학습할 신경망 모델.
-                          VGG16, ResNet50, DenseNet121 중 하나입니다.
-        train_loader (DataLoader): 학습 데이터를 배치 단위로 제공하는 데이터 로더.
-                                  각 배치는 (이미지, 레이블) 튜플로 구성됩니다.
-        criterion: 손실 함수. 예측값과 실제 레이블 간의 차이를 계산합니다.
-                  CrossEntropyLoss를 사용하며, 클래스 가중치가 적용됩니다.
-        optimizer: 옵티마이저. 손실을 최소화하는 방향으로 가중치를 업데이트합니다.
-                  Adam 옵티마이저를 사용합니다.
-        device (torch.device): 연산을 수행할 장치 (CPU 또는 GPU).
-                              GPU를 사용하면 학습 속도가 크게 향상됩니다.
-        epoch (int): 현재 에포크 번호. 진행 상황 표시 및 로깅에 사용됩니다.
-        writer (SummaryWriter, optional): TensorBoard 로깅을 위한 writer 객체.
-                                         학습 과정을 시각적으로 모니터링할 수 있습니다.
+        model (nn.Module): 학습할 신경망 모델
+        train_loader (DataLoader): 학습 데이터를 배치 단위로 제공하는 데이터 로더
+        criterion: 손실 함수
+        optimizer: 옵티마이저
+        device (torch.device): 연산을 수행할 장치 (CPU 또는 GPU)
+        epoch (int): 현재 에포크 번호
+        writer (SummaryWriter, optional): TensorBoard 로깅을 위한 writer 객체
         
     Returns:
-        tuple: (평균_손실값, 정확도_백분율)
-            - 평균_손실값 (float): 에포크 전체의 평균 손실
-            - 정확도_백분율 (float): 학습 데이터에 대한 정확도 (0-100%)
+        dict: 모든 평가 지표를 포함하는 딕셔너리
+            - loss: 평균 손실값
+            - accuracy: 정확도 (%)
+            - recall: Macro Recall (%)
+            - precision: Macro Precision (%)
+            - f1_score: Macro F1-Score (%)
     """
-    # 모델을 학습 모드로 설정
-    # Dropout과 BatchNorm이 학습 모드로 동작합니다
     model.train()
     
-    # 통계 추적을 위한 변수 초기화
-    running_loss = 0.0  # 누적 손실값
-    correct = 0         # 정확하게 예측한 샘플 수
-    total = 0           # 전체 샘플 수
+    running_loss = 0.0
+    all_labels = []
+    all_predictions = []
     
-    # 진행률 표시 바 생성 (tqdm 라이브러리 사용)
     pbar = tqdm(train_loader, desc=f'Epoch {epoch} [Train]')
     
     for batch_idx, (images, labels) in enumerate(pbar):
-        # 데이터를 지정된 장치(GPU/CPU)로 이동
-        # GPU 학습 시 데이터가 GPU 메모리에 있어야 합니다
         images, labels = images.to(device), labels.to(device)
         
-        # 순전파 (Forward Pass)
-        # ---------------------
-        # 이전 배치의 그래디언트를 초기화
-        # 그래디언트가 누적되는 것을 방지합니다
         optimizer.zero_grad()
-        
-        # 모델에 이미지를 입력하여 예측값(로짓) 계산
         outputs = model(images)
-        
-        # 예측값과 실제 레이블 간의 손실 계산
         loss = criterion(outputs, labels)
         
-        # 역전파 및 가중치 최적화 (Backward Pass)
-        # --------------------------------------
-        # 손실에 대한 그래디언트 계산 (역전파)
         loss.backward()
         
-        # 그래디언트 클리핑 (폭발 방지)
         if config.GRADIENT_CLIP_NORM:
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRADIENT_CLIP_NORM)
         
-        # 계산된 그래디언트를 사용하여 가중치 업데이트
         optimizer.step()
         
-        # 통계 업데이트
-        # -------------
-        running_loss += loss.item()  # 배치 손실 누적
-        
-        # 예측 클래스 추출 (가장 높은 확률을 가진 클래스)
+        running_loss += loss.item()
         _, predicted = outputs.max(1)
         
-        # 전체 샘플 수와 정답 수 업데이트
-        total += labels.size(0)
-        correct += predicted.eq(labels).sum().item()
+        all_labels.extend(labels.cpu().numpy())
+        all_predictions.extend(predicted.cpu().numpy())
         
-        # 진행률 표시 바에 현재 상태 업데이트
+        current_acc = 100. * (np.array(all_predictions) == np.array(all_labels)).mean()
         pbar.set_postfix({
-            'loss': running_loss / (batch_idx + 1),  # 현재까지의 평균 손실
-            'acc': 100. * correct / total            # 현재까지의 정확도
+            'loss': running_loss / (batch_idx + 1),
+            'acc': current_acc
         })
     
-    # 에포크 전체 통계 계산
-    avg_loss = running_loss / len(train_loader)  # 평균 손실
-    accuracy = 100. * correct / total            # 정확도 백분율
+    # numpy 배열로 변환
+    all_labels = np.array(all_labels)
+    all_predictions = np.array(all_predictions)
+    
+    # 평가 지표 계산
+    avg_loss = running_loss / len(train_loader)
+    accuracy = 100. * (all_predictions == all_labels).mean()
+    recall = 100. * recall_score(all_labels, all_predictions, average='macro', zero_division=0)
+    precision = 100. * precision_score(all_labels, all_predictions, average='macro', zero_division=0)
+    f1 = 100. * f1_score(all_labels, all_predictions, average='macro', zero_division=0)
     
     # TensorBoard에 학습 메트릭 로깅
     if writer:
         writer.add_scalar('Loss/train', avg_loss, epoch)
         writer.add_scalar('Accuracy/train', accuracy, epoch)
+        writer.add_scalar('Recall/train', recall, epoch)
+        writer.add_scalar('Precision/train', precision, epoch)
+        writer.add_scalar('F1-Score/train', f1, epoch)
     
-    return avg_loss, accuracy
+    # 모든 메트릭을 딕셔너리로 반환
+    metrics = {
+        'loss': avg_loss,
+        'accuracy': accuracy,
+        'recall': recall,
+        'precision': precision,
+        'f1_score': f1
+    }
+    
+    return metrics
 
 
 def validate(model, val_loader, criterion, device, epoch, writer=None):
@@ -597,15 +588,24 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     # 학습 시간 측정 시작
     start_time = time.time()
     
+    # 전체 에포크 프로그래스 바
+    epoch_pbar = tqdm(range(1, epochs + 1), desc='전체 진행', position=0)
+    
     # 메인 학습 루프
-    for epoch in range(1, epochs + 1):
-        print(f'\nEpoch {epoch}/{epochs}')
-        print('-' * 40)
+    for epoch in epoch_pbar:
+        epoch_pbar.set_description(f'전체 진행 [{epoch}/{epochs}]')
         
-        # 학습 단계
-        train_loss, train_acc = train_one_epoch(
+        # 학습 단계 (모든 평가 지표 포함)
+        train_metrics = train_one_epoch(
             model, train_loader, criterion, optimizer, device, epoch, writer
         )
+        
+        # 학습 메트릭 추출
+        train_loss = train_metrics['loss']
+        train_acc = train_metrics['accuracy']
+        train_recall = train_metrics['recall']
+        train_precision = train_metrics['precision']
+        train_f1 = train_metrics['f1_score']
         
         # 검증 단계 (의료 AI 평가 지표 포함)
         val_metrics = validate(
@@ -627,11 +627,17 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         history['val_acc'].append(val_acc)
         
         # 추가 메트릭 기록 (history에 키가 없으면 생성)
-        if 'val_recall' not in history:
+        if 'train_recall' not in history:
+            history['train_recall'] = []
+            history['train_precision'] = []
+            history['train_f1'] = []
             history['val_recall'] = []
             history['val_precision'] = []
             history['val_f1'] = []
             history['val_auc'] = []
+        history['train_recall'].append(train_recall)
+        history['train_precision'].append(train_precision)
+        history['train_f1'].append(train_f1)
         history['val_recall'].append(val_recall)
         history['val_precision'].append(val_precision)
         history['val_f1'].append(val_f1)
@@ -711,8 +717,9 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     print(f'Accuracy: {test_metrics["accuracy"]:.2f}%')
     print(f'AUC-ROC: {test_metrics["auc_roc"]:.4f}')
     
-    # 최종 체크포인트 저장 (테스트 결과 포함)
-    final_checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f'{model_name}_final.pth')
+    # 최종 체크포인트 저장 (타임스탬프와 성능 포함, 세션 폴더에 저장)
+    final_filename = f'{model_name}_{checkpoint_manager.session_timestamp}_final_recall{best_val_recall:.2f}.pth'
+    final_checkpoint_path = os.path.join(checkpoint_manager.save_dir, final_filename)
     save_checkpoint({
         'model_name': model_name,
         'model_state_dict': model.state_dict(),
@@ -721,6 +728,52 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         'history': history,
         'training_time': training_time
     }, final_checkpoint_path)
+    
+    # 학습 로그를 JSON 형식으로 저장 (시각화용)
+    import json
+    training_log = {
+        'model_name': model_name,
+        'session_timestamp': checkpoint_manager.session_timestamp,
+        'training_time_minutes': training_time / 60,
+        'epochs_trained': len(history['train_loss']),
+        'best_val_recall': best_val_recall,
+        'test_metrics': {
+            'accuracy': test_metrics['accuracy'],
+            'recall': test_metrics['recall'],
+            'precision': test_metrics['precision'],
+            'f1_score': test_metrics['f1_score'],
+            'auc_roc': test_metrics['auc_roc']
+        },
+        'hyperparameters': {
+            'batch_size': batch_size,
+            'learning_rate': learning_rate,
+            'optimizer': config.OPTIMIZER,
+            'weight_decay': config.WEIGHT_DECAY,
+            'lr_scheduler': config.LR_SCHEDULER_TYPE,
+            'warmup_epochs': config.LR_WARMUP_EPOCHS,
+            'label_smoothing': config.LABEL_SMOOTHING,
+            'gradient_clip': config.GRADIENT_CLIP_NORM
+        },
+        'history': {
+            'train_loss': history['train_loss'],
+            'train_acc': history['train_acc'],
+            'train_recall': history.get('train_recall', []),
+            'train_precision': history.get('train_precision', []),
+            'train_f1': history.get('train_f1', []),
+            'val_loss': history['val_loss'],
+            'val_acc': history['val_acc'],
+            'val_recall': history.get('val_recall', []),
+            'val_precision': history.get('val_precision', []),
+            'val_f1': history.get('val_f1', []),
+            'val_auc': history.get('val_auc', [])
+        }
+    }
+    
+    log_filename = f'{model_name}_{checkpoint_manager.session_timestamp}_training_log.json'
+    log_path = os.path.join(checkpoint_manager.save_dir, log_filename)
+    with open(log_path, 'w', encoding='utf-8') as f:
+        json.dump(training_log, f, indent=2, ensure_ascii=False)
+    print(f'학습 로그 저장됨: {log_path}')
     
     # TensorBoard writer 종료
     writer.close()
@@ -755,10 +808,10 @@ def main():
     # 명령줄 인자 파서 생성
     parser = argparse.ArgumentParser(description='Train COVID-19 Classification Model')
     
-    # 필수 인자: 모델 아키텍처 선택
-    parser.add_argument('--model', type=str, required=True,default='vgg16',
+    # 모델 아키텍처 선택 (기본값: vgg16)
+    parser.add_argument('--model', type=str, default='vgg16',
                        choices=['vgg16', 'resnet50', 'densenet121'],
-                       help='Model architecture to train')
+                       help='Model architecture to train (default: vgg16)')
     
     # 선택적 인자: 학습 하이퍼파라미터
     parser.add_argument('--epochs', type=int, default=None,
