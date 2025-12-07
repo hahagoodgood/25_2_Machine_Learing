@@ -38,22 +38,60 @@ MODELS = {
 # ========================
 # 학습 설정
 # ========================
-# 하이퍼파라미터
-BATCH_SIZE = 32  # 배치 크기
-LEARNING_RATE = 0.001  # 학습률
-NUM_EPOCHS = 50  # 총 에포크 수
-RANDOM_SEED = 42  # 재현성을 위한 랜덤 시드
+# 기본 하이퍼파라미터
+BATCH_SIZE = 32  # 배치 크기 (범위: 8~128, GPU 메모리에 따라 조정)
+LEARNING_RATE = 0.001  # 초기 학습률 (범위: 1e-5 ~ 1e-2)
+NUM_EPOCHS = 500  # 총 에포크 수 (범위: 10~1000)
+RANDOM_SEED = 42  # 재현성을 위한 랜덤 시드 (범위: 임의의 정수)
 
-# 조기 종료 설정
-EARLY_STOPPING_PATIENCE = 10  # 성능 개선 없이 기다리는 에포크 수
+# ========================
+# 옵티마이저 설정
+# ========================
+# 옵티마이저 선택: 'adam', 'adamw', 'sgd'
+OPTIMIZER = 'adamw'  # AdamW 권장 (가중치 감쇠 분리)
+WEIGHT_DECAY = 0.01  # L2 정규화 강도 (범위: 1e-5 ~ 0.1, 권장: 0.01)
+MOMENTUM = 0.9  # SGD용 모멘텀 (범위: 0.8 ~ 0.99, 권장: 0.9)
+BETAS = (0.9, 0.999)  # Adam/AdamW용 베타 값 (범위: (0.8~0.99, 0.9~0.999))
 
+# ========================
 # 학습률 스케줄러 설정
-LR_SCHEDULER_FACTOR = 0.5  # 학습률 감소율
-LR_SCHEDULER_PATIENCE = 5  # 학습률 감소 전에 기다리는 에포크 수
-LR_SCHEDULER_MIN_LR = 1e-7  # 최소 학습률
+# ========================
+# 스케줄러 선택: 'plateau', 'cosine', 'step', 'none'
+LR_SCHEDULER_TYPE = 'cosine'  # CosineAnnealing 권장
+
+# ReduceLROnPlateau 설정 (LR_SCHEDULER_TYPE='plateau'일 때 사용)
+LR_SCHEDULER_FACTOR = 0.5  # 학습률 감소율 (범위: 0.1 ~ 0.9, 권장: 0.5)
+LR_SCHEDULER_PATIENCE = 5  # 학습률 감소 전에 기다리는 에포크 수 (범위: 3~20)
+
+# CosineAnnealingLR 설정 (LR_SCHEDULER_TYPE='cosine'일 때 사용)
+LR_COSINE_T_MAX = None  # None이면 NUM_EPOCHS 사용 (범위: 10~NUM_EPOCHS)
+
+# StepLR 설정 (LR_SCHEDULER_TYPE='step'일 때 사용)
+LR_STEP_SIZE = 30  # 학습률 감소 스텝 크기 (범위: 10~100 에포크)
+LR_GAMMA = 0.1  # 학습률 감소 배율 (범위: 0.1 ~ 0.5, 권장: 0.1)
+
+# 공통 설정
+LR_SCHEDULER_MIN_LR = 1e-7  # 최소 학습률 (범위: 1e-8 ~ 1e-5)
+LR_WARMUP_EPOCHS = 5  # 웜업 에포크 수 (범위: 0~10, 0이면 비활성화)
+
+# ========================
+# 학습 안정화 설정
+# ========================
+GRADIENT_CLIP_NORM = 1.0  # 그래디언트 클리핑 (범위: 0.5~5.0, None이면 비활성화)
+LABEL_SMOOTHING = 0.1  # 레이블 스무딩 (범위: 0.0~0.2, 0이면 비활성화)
+
+# ========================
+# 조기 종료 설정
+# ========================
+EARLY_STOPPING_PATIENCE = 10  # 성능 개선 없이 기다리는 에포크 수 (범위: 5~30)
+
+# ========================
+# 체크포인트 설정
+# ========================
+MAX_CHECKPOINTS = 3  # 저장할 최대 체크포인트 수 (범위: 1~10)
 
 # 검증 데이터 분할
-VALIDATION_SPLIT = 0.2  # 훈련 데이터의 20%를 검증에 사용
+VALIDATION_SPLIT = 0.2  # 훈련 데이터 중 검증에 사용할 비율 (범위: 0.1~0.3)
 
 # ========================
 # 데이터 증강

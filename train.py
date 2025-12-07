@@ -174,6 +174,10 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, wr
         # 손실에 대한 그래디언트 계산 (역전파)
         loss.backward()
         
+        # 그래디언트 클리핑 (폭발 방지)
+        if config.GRADIENT_CLIP_NORM:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRADIENT_CLIP_NORM)
+        
         # 계산된 그래디언트를 사용하여 가중치 업데이트
         optimizer.step()
         
@@ -482,25 +486,82 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
     
     # 손실 함수 정의
     # 클래스 불균형을 처리하기 위해 클래스 가중치를 적용한 CrossEntropyLoss 사용
-    # 소수 클래스에 더 높은 가중치를 부여하여 균형 잡힌 학습을 유도
+    # 레이블 스무딩: 과적합 방지 및 일반화 성능 향상
     class_weights = class_weights.to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights,
+        label_smoothing=config.LABEL_SMOOTHING  # 레이블 스무딩 적용
+    )
+    print(f'  레이블 스무딩: {config.LABEL_SMOOTHING}')
     
     # 옵티마이저 정의
-    # Adam 옵티마이저: 적응형 학습률을 사용하여 효율적인 최적화 수행
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    # config.OPTIMIZER에 따라 적절한 옵티마이저 선택
+    optimizer_name = config.OPTIMIZER.lower()
+    if optimizer_name == 'adam':
+        optimizer = optim.Adam(
+            model.parameters(),
+            lr=learning_rate,
+            betas=config.BETAS,
+            weight_decay=config.WEIGHT_DECAY
+        )
+    elif optimizer_name == 'adamw':
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            betas=config.BETAS,
+            weight_decay=config.WEIGHT_DECAY
+        )
+    elif optimizer_name == 'sgd':
+        optimizer = optim.SGD(
+            model.parameters(),
+            lr=learning_rate,
+            momentum=config.MOMENTUM,
+            weight_decay=config.WEIGHT_DECAY,
+            nesterov=True
+        )
+    else:
+        raise ValueError(f'지원하지 않는 옵티마이저: {config.OPTIMIZER}')
+    
+    print(f'옵티마이저: {config.OPTIMIZER.upper()} (weight_decay={config.WEIGHT_DECAY})')
     
     # 학습률 스케줄러 정의
-    # ReduceLROnPlateau: 검증 성능이 정체되면 학습률을 감소시킴
-    # 이를 통해 더 세밀한 가중치 조정이 가능해짐
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='max',                          # 정확도가 높을수록 좋음
-        factor=config.LR_SCHEDULER_FACTOR,   # 학습률 감소 비율
-        patience=config.LR_SCHEDULER_PATIENCE,  # 개선 없이 기다리는 에포크 수
-        min_lr=config.LR_SCHEDULER_MIN_LR,   # 최소 학습률 (하한선)
-        verbose=True                         # 학습률 변경 시 출력
-    )
+    scheduler_type = config.LR_SCHEDULER_TYPE.lower()
+    if scheduler_type == 'plateau':
+        # ReduceLROnPlateau: 검증 성능이 정체되면 학습률 감소
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='max',
+            factor=config.LR_SCHEDULER_FACTOR,
+            patience=config.LR_SCHEDULER_PATIENCE,
+            min_lr=config.LR_SCHEDULER_MIN_LR,
+            verbose=True
+        )
+    elif scheduler_type == 'cosine':
+        # CosineAnnealingLR: 코사인 함수 형태로 학습률 감소
+        t_max = config.LR_COSINE_T_MAX if config.LR_COSINE_T_MAX else epochs
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=t_max,
+            eta_min=config.LR_SCHEDULER_MIN_LR
+        )
+    elif scheduler_type == 'step':
+        # StepLR: 일정 에포크마다 학습률 감소
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=config.LR_STEP_SIZE,
+            gamma=config.LR_GAMMA
+        )
+    elif scheduler_type == 'none':
+        # 스케줄러 없음
+        scheduler = None
+    else:
+        raise ValueError(f'지원하지 않는 스케줄러: {config.LR_SCHEDULER_TYPE}')
+    
+    print(f'학습률 스케줄러: {config.LR_SCHEDULER_TYPE.upper()}')
+    if config.LR_WARMUP_EPOCHS > 0:
+        print(f'웜업 에포크: {config.LR_WARMUP_EPOCHS}')
+    if config.GRADIENT_CLIP_NORM:
+        print(f'그래디언트 클리핑: {config.GRADIENT_CLIP_NORM}')
     
     # TensorBoard writer 초기화
     # 학습 과정을 시각적으로 모니터링할 수 있음
@@ -518,11 +579,11 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         'val_acc': []       # 검증 정확도 기록
     }
     
-    # 체크포인트 관리자 초기화 (상위 3개 체크포인트만 유지)
+    # 체크포인트 관리자 초기화 (설정에 따른 체크포인트 수 유지)
     checkpoint_manager = CheckpointManager(
         save_dir=config.CHECKPOINT_DIR,
         model_name=model_name,
-        max_checkpoints=3
+        max_checkpoints=config.MAX_CHECKPOINTS
     )
     
     # 최고 모델 추적을 위한 변수
@@ -577,9 +638,24 @@ def train_model(model_name, epochs=None, batch_size=None, learning_rate=None, de
         history['val_auc'].append(val_auc)
         
         # 학습률 스케줄러 업데이트
-        # Recall을 기준으로 학습률 조정 (의료 AI에 적합)
-        scheduler.step(val_recall)
-        current_lr = optimizer.param_groups[0]['lr']
+        # 웜업 기간에는 선형 웜업 적용
+        if epoch <= config.LR_WARMUP_EPOCHS:
+            # 웜업: 학습률을 선형으로 증가
+            warmup_lr = learning_rate * (epoch / config.LR_WARMUP_EPOCHS)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = warmup_lr
+            current_lr = warmup_lr
+        elif scheduler is not None:
+            # 스케줄러 타입에 따라 다른 방식으로 업데이트
+            if config.LR_SCHEDULER_TYPE.lower() == 'plateau':
+                # ReduceLROnPlateau: 검증 지표 기반
+                scheduler.step(val_recall)
+            else:
+                # Cosine, Step 등: 에포크 기반
+                scheduler.step()
+            current_lr = optimizer.param_groups[0]['lr']
+        else:
+            current_lr = optimizer.param_groups[0]['lr']
         
         # 에포크 결과 요약 출력 (모든 평가 지표)
         print(f'\nEpoch {epoch} Summary:')
@@ -680,14 +756,14 @@ def main():
     parser = argparse.ArgumentParser(description='Train COVID-19 Classification Model')
     
     # 필수 인자: 모델 아키텍처 선택
-    parser.add_argument('--model', type=str, required=True,
+    parser.add_argument('--model', type=str, required=True,default='vgg16',
                        choices=['vgg16', 'resnet50', 'densenet121'],
                        help='Model architecture to train')
     
     # 선택적 인자: 학습 하이퍼파라미터
-    parser.add_argument('--epochs', type=int, default=100,
+    parser.add_argument('--epochs', type=int, default=None,
                        help=f'Number of epochs (default: {config.NUM_EPOCHS})')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=None,
                        help=f'Batch size (default: {config.BATCH_SIZE})')
     parser.add_argument('--lr', type=float, default=None,
                        help=f'Learning rate (default: {config.LEARNING_RATE})')
