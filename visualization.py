@@ -19,6 +19,7 @@
 
 import os
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import seaborn as sns
 import numpy as np
 
@@ -43,6 +44,29 @@ def setup_plot_style():
     plt.rcParams['font.family'] = 'DejaVu Sans'
     plt.rcParams['axes.unicode_minus'] = False
     plt.rcParams['font.size'] = 10
+
+
+def get_epoch_step(num_epochs):
+    """에포크 수에 따라 적절한 눈금 간격 계산"""
+    if num_epochs <= 20:
+        return 1
+    elif num_epochs <= 50:
+        return 2 # 20~50: 2단위
+    elif num_epochs <= 100:
+        return 5 # 50~100: 5단위
+    elif num_epochs <= 200:
+        return 10 # 100~200: 10단위
+    elif num_epochs <= 500:
+        return 20 # 200~500: 20단위
+    else:
+        return 50 # 500~: 50단위
+
+
+def set_epoch_ticks(ax, num_epochs):
+    """x축 눈금을 정수로 설정하고 간격 조정"""
+    step = get_epoch_step(num_epochs)
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(step))
+
 
 
 # ========================================
@@ -70,6 +94,10 @@ def plot_loss_curve(history, best_epoch, model_name, save_path):
     plt.title(f'{model_name} - Training & Validation Loss', fontsize=14, fontweight='bold')
     plt.legend(loc='upper right', fontsize=10)
     plt.grid(True, alpha=0.3)
+    
+    # x축 눈금 간격 조정
+    set_epoch_ticks(plt.gca(), len(epochs_range))
+    
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
@@ -94,6 +122,10 @@ def plot_accuracy_curve(history, best_epoch, model_name, save_path):
     plt.title(f'{model_name} - Training & Validation Accuracy', fontsize=14, fontweight='bold')
     plt.legend(loc='lower right', fontsize=10)
     plt.grid(True, alpha=0.3)
+    
+    # x축 눈금 간격 조정
+    set_epoch_ticks(plt.gca(), len(epochs_range))
+    
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
@@ -120,9 +152,15 @@ def plot_batch_loss(history, batches_per_epoch, model_name, save_path):
              linewidth=2, label='Val (Epoch)', marker='o', markersize=4)
     
     # 에포크 구분선 및 X축 눈금
-    for e_tick in epoch_ticks:
+    step = get_epoch_step(num_epochs)
+    
+    shown_epoch_ticks = [e * batches_per_epoch for e in range(step, num_epochs + 1, step)]
+    shown_labels = [str(e) for e in range(step, num_epochs + 1, step)]
+    
+    for e_tick in shown_epoch_ticks:
         plt.axvline(x=e_tick, color='gray', linestyle=':', alpha=0.3)
-    plt.xticks(epoch_ticks, [f'{e}' for e in range(1, num_epochs + 1)])
+        
+    plt.xticks(shown_epoch_ticks, shown_labels)
     
     plt.xlabel('Epoch', fontsize=12)
     plt.ylabel('Loss', fontsize=12)
@@ -160,9 +198,15 @@ def plot_batch_recall(history, test_metrics, best_epoch, batches_per_epoch, mode
                linewidth=2, label=f"Test(Ep{best_epoch}): {test_metrics['recall']:.1f}%")
     
     # 에포크 구분선 및 X축 눈금
-    for e_tick in epoch_ticks:
+    step = get_epoch_step(num_epochs)
+    
+    shown_epoch_ticks = [e * batches_per_epoch for e in range(step, num_epochs + 1, step)]
+    shown_labels = [str(e) for e in range(step, num_epochs + 1, step)]
+    
+    for e_tick in shown_epoch_ticks:
         plt.axvline(x=e_tick, color='gray', linestyle=':', alpha=0.3)
-    plt.xticks(epoch_ticks, [f'{e}' for e in range(1, num_epochs + 1)])
+        
+    plt.xticks(shown_epoch_ticks, shown_labels)
     
     plt.xlabel('Epoch', fontsize=12)
     plt.ylabel('Recall (%)', fontsize=12)
@@ -196,6 +240,10 @@ def plot_auc_curve(history, best_epoch, model_name, save_path):
     plt.title(f'{model_name} - AUC-ROC Curve', fontsize=14, fontweight='bold')
     plt.legend(loc='lower right', fontsize=10)
     plt.grid(True, alpha=0.3)
+    
+    # x축 눈금 간격 조정
+    set_epoch_ticks(plt.gca(), len(epochs_range))
+    
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     plt.close()
@@ -223,6 +271,8 @@ def plot_metrics_grid(history, test_metrics, best_epoch, model_name, save_path):
         ax.set_xlabel('Epoch')
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
+        # x축 눈금 간격 조정
+        set_epoch_ticks(ax, len(epochs_range))
     
     # 6-1. Recall
     setup_subplot(axes[0, 0], 'Recall (%)', 'train_recall', 'val_recall', 'recall')
@@ -245,6 +295,7 @@ def plot_metrics_grid(history, test_metrics, best_epoch, model_name, save_path):
     axes[1, 1].set_xlabel('Epoch')
     axes[1, 1].legend(fontsize=8)
     axes[1, 1].grid(True, alpha=0.3)
+    set_epoch_ticks(axes[1, 1], len(epochs_range))
     
     plt.suptitle(f'{model_name} - Metrics Grid', fontsize=14, fontweight='bold')
     plt.tight_layout()
@@ -329,6 +380,7 @@ def plot_dashboard(history, test_metrics, cm, per_class_report, class_names,
     ax1.set_xlabel('Epoch')
     ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.3)
+    set_epoch_ticks(ax1, len(epochs_range))
     
     # 9-2. Accuracy (중앙상단)
     ax2 = fig.add_subplot(2, 3, 2)
@@ -342,6 +394,7 @@ def plot_dashboard(history, test_metrics, cm, per_class_report, class_names,
     ax2.set_xlabel('Epoch')
     ax2.legend(fontsize=7, loc='lower right')
     ax2.grid(True, alpha=0.3)
+    set_epoch_ticks(ax2, len(epochs_range))
     
     # 9-3. Val Metrics (우상단)
     ax3 = fig.add_subplot(2, 3, 3)
@@ -363,6 +416,7 @@ def plot_dashboard(history, test_metrics, cm, per_class_report, class_names,
     ax3.set_xlabel('Epoch')
     ax3.legend(fontsize=6, loc='lower right', ncol=2)
     ax3.grid(True, alpha=0.3)
+    set_epoch_ticks(ax3, len(epochs_range))
     
     # 9-4. Confusion Matrix (좌하단)
     ax4 = fig.add_subplot(2, 3, 4)

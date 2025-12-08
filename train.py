@@ -89,15 +89,19 @@ class EarlyStopping:
         if self.best_score is None:
             # 첫 번째 에포크: 현재 점수를 기준으로 설정
             self.best_score = score
+            print(f'  [EarlyStopping] Initialized - best_score: {self.best_score:.4f}, counter: {self.counter}/{self.patience}')
         elif self.mode == 'max':
             # 정확도 등 값이 클수록 좋은 경우
             if score < self.best_score + self.min_delta:
                 # 성능이 개선되지 않음 - 카운터 증가
                 self.counter += 1
+                print(f'  [EarlyStopping] No improvement - score: {score:.4f}, best: {self.best_score:.4f}, counter: {self.counter}/{self.patience}')
                 if self.counter >= self.patience:
                     self.early_stop = True
+                    print(f'  [EarlyStopping]  TRIGGERED - Stopping training')
             else:
                 # 성능이 개선됨 - 최고 점수 갱신 및 카운터 리셋
+                print(f'  [EarlyStopping] Improved! - score: {score:.4f} > best: {self.best_score:.4f}, counter reset')
                 self.best_score = score
                 self.counter = 0
         else:  # mode == 'min'
@@ -105,10 +109,13 @@ class EarlyStopping:
             if score > self.best_score - self.min_delta:
                 # 성능이 개선되지 않음 - 카운터 증가
                 self.counter += 1
+                print(f'  [EarlyStopping] No improvement - score: {score:.4f}, best: {self.best_score:.4f}, counter: {self.counter}/{self.patience}')
                 if self.counter >= self.patience:
                     self.early_stop = True
+                    print(f'  [EarlyStopping]  TRIGGERED - Stopping training')
             else:
                 # 성능이 개선됨 - 최고 점수 갱신 및 카운터 리셋
+                print(f'  [EarlyStopping] Improved! - score: {score:.4f} < best: {self.best_score:.4f}, counter reset')
                 self.best_score = score
                 self.counter = 0
 

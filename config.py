@@ -40,7 +40,7 @@ MODELS = {
 # ========================
 # 기본 하이퍼파라미터
 BATCH_SIZE = 32  # 배치 크기 (범위: 8~128, GPU 메모리에 따라 조정)
-LEARNING_RATE = 1e-4  # 초기 학습률 (범위: 1e-5 ~ 1e-2)
+LEARNING_RATE = 1e-3  # 초기 학습률 (범위: 1e-5 ~ 1e-2)
 NUM_EPOCHS = 1000  # 총 에포크 수 (범위: 10~1000)
 RANDOM_SEED = 42  # 재현성을 위한 랜덤 시드 (범위: 임의의 정수)
 
@@ -48,8 +48,8 @@ RANDOM_SEED = 42  # 재현성을 위한 랜덤 시드 (범위: 임의의 정수)
 # 옵티마이저 설정
 # ========================
 # 옵티마이저 선택: 'adam', 'adamw', 'sgd'
-OPTIMIZER = 'adamw'  # AdamW 권장 (가중치 감쇠 분리)
-WEIGHT_DECAY = 1e-5  # L2 정규화 강도 (범위: 1e-5 ~ 0.1, 권장: 0.01)
+OPTIMIZER = 'sgd'  # AdamW 권장 (가중치 감쇠 분리)
+WEIGHT_DECAY = 8e-2  # L2 정규화 강도 (범위: 1e-5 ~ 0.1, 권장: 0.01)
 MOMENTUM = 0.9  # SGD용 모멘텀 (범위: 0.8 ~ 0.99, 권장: 0.9)
 BETAS = (0.9, 0.999)  # Adam/AdamW용 베타 값 (범위: (0.8~0.99, 0.9~0.999))
 
@@ -78,12 +78,12 @@ LR_WARMUP_EPOCHS = 5  # 웜업 에포크 수 (범위: 0~10, 0이면 비활성화
 # 학습 안정화 설정
 # ========================
 GRADIENT_CLIP_NORM = 1.0  # 그래디언트 클리핑 (범위: 0.5~5.0, None이면 비활성화)
-LABEL_SMOOTHING = 0.001  # 레이블 스무딩 (범위: 0.0~0.2, 0이면 비활성화)
+LABEL_SMOOTHING = 0.01  # 레이블 스무딩 (범위: 0.0~0.2, 0이면 비활성화)
 
 # ========================
 # 조기 종료 설정
 # ========================
-EARLY_STOPPING_PATIENCE = 30  # 성능 개선 없이 기다리는 에포크 수 (범위: 5~30)
+EARLY_STOPPING_PATIENCE = 15 # 성능 개선 없이 기다리는 에포크 수 (범위: 5~30)
 
 # ========================
 # 체크포인트 설정L
@@ -129,9 +129,9 @@ SAVE_BEST_ONLY = True  # 검증 정확도 기준 최고 모델만 저장
 # 모델별 설정
 # ========================
 # 드롭아웃 비율 (과적합 방지)
-VGG16_DROPOUT = 0.5  # VGG16 드롭아웃 비율
-RESNET50_DROPOUT = 0.3  # ResNet50 드롭아웃 비율
-DENSENET121_DROPOUT = 0.3  # DenseNet121 드롭아웃 비율
+VGG16_DROPOUT = 0.2  # VGG16 드롭아웃 비율
+RESNET50_DROPOUT = 0.2  # ResNet50 드롭아웃 비율
+DENSENET121_DROPOUT = 0.2  # DenseNet121 드롭아웃 비율
 
 # 백본 동결 설정
 FREEZE_BACKBONE = False  # True: 분류기 헤드만 학습, False: 전체 네트워크 학습
