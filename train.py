@@ -968,7 +968,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train COVID-19 Classification Model')
     
     # 모델 아키텍처 선택 (기본값: vgg16)
-    parser.add_argument('--model', type=str, default='vgg16',
+    parser.add_argument('--model', type=str, default='densenet121',
                        choices=['vgg16', 'resnet50', 'densenet121'],
                        help='Model architecture to train (default: vgg16)')
     
