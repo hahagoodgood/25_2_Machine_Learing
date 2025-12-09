@@ -39,3 +39,8 @@ results/
 Thumbs.db
 PRESENTATION_GUIDE.md
 /final__model
+report.md
+analyze_distribution.py
+convert_to_pdf.py
+fonts/
+img/
