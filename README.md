@@ -2,7 +2,7 @@
 
 이 프로젝트는 PyTorch를 사용하여 COVID-19 흉부 X-ray 이미지를 분류하는 딥러닝 모델을 구축하고, VGG16, ResNet50, DenseNet121 세 가지 모델의 성능을 비교합니다.
 
-## 📊 Dataset
+## Dataset
 
 **출처**: [COVID-19 Image Dataset](https://www.kaggle.com/datasets/pranavraikokte/covid19-image-dataset/data?select=Covid19-dataset)
 
@@ -22,19 +22,19 @@ dataset/
 **클래스**: Covid, Normal, Viral Pneumonia (총 3개)  
 **총 이미지 수**: 훈련 251장, 테스트 66장
 
-## 🚀 Features
+## Features
 
-- ✅ **3가지 사전학습 모델**: VGG16, ResNet50, DenseNet121 (ImageNet weights)
-- ✅ **의료 특화 평가 지표**: **Recall(재현율)을 주 지표로 사용** (실제 환자를 놓치지 않기 위함), Precision, F1-Score, AUC-ROC
-- ✅ **데이터 증강**: 작은 데이터셋을 위한 적극적인 augmentation 전략
-- ✅ **클래스 불균형 처리**: 가중치 기반 손실 함수 & 레이블 스무딩
-- ✅ **Early Stopping**: 검증 Recall 기준 과적합 방지
-- ✅ **학습률 스케줄링**: ReduceLROnPlateau, CosineAnnealingLR 등 지원
-- ✅ **TensorBoard 로깅**: 실시간 학습 모니터링
-- ✅ **모델 체크포인팅**: 최고 성능(Recall) 모델 자동 저장 (세션별 관리)
-- ✅ **Jupyter Notebooks**: 대화형 평가 및 비교 분석
+- **3가지 사전학습 모델**: VGG16, ResNet50, DenseNet121 (ImageNet weights)
+- **의료 특화 평가 지표**: **Recall(재현율)을 주 지표로 사용** (실제 환자를 놓치지 않기 위함), Precision, F1-Score, AUC-ROC
+- **데이터 증강**: 작은 데이터셋을 위한 적극적인 augmentation 전략
+- **클래스 불균형 처리**: 가중치 기반 손실 함수 & 레이블 스무딩
+- **Early Stopping**: 검증 Recall 기준 과적합 방지
+- **학습률 스케줄링**: ReduceLROnPlateau, CosineAnnealingLR 등 지원
+- **TensorBoard 로깅**: 실시간 학습 모니터링
+- **모델 체크포인팅**: 최고 성능(Recall) 모델 자동 저장 (세션별 관리)
+- **시각화 모듈**: 학습 곡선, 혼동 행렬, 대시보드 등 자동 생성
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 25_2_Machine_Learing/
@@ -53,13 +53,12 @@ dataset/
 ├── dataset.py                  # 데이터 로더 및 증강
 ├── utils.py                    # 유틸리티 함수
 ├── train.py                    # 학습 스크립트
-├── evaluate.ipynb              # 평가 노트북
-├── compare_models.ipynb        # 모델 비교 노트북
+├── visualization.py            # 시각화 모듈 (플롯 및 대시보드)
 ├── requirements.txt            # 의존성 패키지
 └── README.md                   # 이 파일
 ```
 
-## 🛠️ Installation
+## Installation
 
 ### 1. 필요 패키지 설치
 
@@ -76,7 +75,7 @@ pip install -r requirements.txt
 - tensorboard
 - jupyter
 
-## 📖 Usage
+## Usage
 
 ### 1. 모델 학습
 
@@ -115,37 +114,22 @@ tensorboard --logdir=runs
 
 브라우저에서 `http://localhost:6006` 으로 접속
 
-### 3. 모델 평가
+### 3. 모델 평가 및 시각화
 
-`evaluate.ipynb` 노트북을 사용하여 학습된 모델을 평가:
+학습 완료 시 자동으로 다음 시각화가 생성됩니다:
 
-```bash
-jupyter notebook evaluate.ipynb
-```
+**자동 생성 시각화**:
+- Loss/Accuracy 학습 곡선
+- 배치별 Loss/Recall 곡선
+- AUC-ROC 변화 곡선
+- Metrics Grid (Recall, Precision, F1)
+- 혼동 행렬 (Confusion Matrix)
+- 클래스별 성능 바 차트
+- 종합 대시보드 (6개 패널)
 
-**평가 내용**:
-- 테스트 세트에서 정확도 측정
-- 클래스별 precision, recall, F1-score
-- Confusion matrix 시각화
-- ROC curves 및 AUC 점수
-- 결과를 JSON 및 CSV로 저장
+**결과 저장 위치**: `results/` 디렉토리에 PNG 및 JSON 형식으로 저장
 
-### 4. 모델 비교
-
-`compare_models.ipynb` 노트북을 사용하여 세 모델의 성능을 비교:
-
-```bash
-jupyter notebook compare_models.ipynb
-```
-
-**비교 내용**:
-- 학습/검증 loss 및 accuracy 곡선
-- 테스트 정확도 막대 그래프
-- 클래스별 성능 비교
-- F1-score 히트맵
-- 학습 효율성 분석
-
-## ⚙️ Configuration
+## Configuration
 
 `config.py` 파일에서 주요 설정을 수정할 수 있습니다:
 
@@ -164,7 +148,7 @@ ROTATION_DEGREES = 15
 COLOR_JITTER_BRIGHTNESS = 0.2
 ```
 
-## 🎯 Data Augmentation
+## Data Augmentation
 
 작은 데이터셋의 한계를 극복하기 위해 다음과 같은 증강 전략을 사용:
 
@@ -180,7 +164,7 @@ COLOR_JITTER_BRIGHTNESS = 0.2
 - Resize (224x224)
 - ImageNet 정규화만 적용
 
-## 📈 Expected Results
+## Expected Results
 
 훈련 후 다음과 같은 파일들이 생성됩니다:
 
@@ -207,7 +191,7 @@ runs/
 └── densenet121/
 ```
 
-## 🔬 Model Architecture
+## Model Architecture
 
 ### VGG16
 - 사전학습된 VGG16 backbone
@@ -225,7 +209,7 @@ runs/
 - Dropout 적용
 - 작은 데이터셋에 효율적
 
-## 🎓 Training Tips
+## Training Tips
 
 1. **GPU 사용 권장**: CUDA 지원 GPU가 있으면 자동으로 사용됩니다
 2. **배치 크기 조정**: GPU 메모리에 따라 batch_size 조정
@@ -233,7 +217,7 @@ runs/
 4. **Early stopping**: 검증 Recall이 개선되지 않으면 학습이 조기 종료될 수 있습니다.
 5. **재현성**: 모든 실험은 random seed=42로 고정
 
-## 📝 Notes
+## Notes
 
 - **클래스 불균형**: 가중치 기반 CrossEntropyLoss로 처리
 - **레이블 스무딩(Label Smoothing)**: 0.01 적용으로 과적합 방지
@@ -241,18 +225,18 @@ runs/
 - **전이 학습**: ImageNet 사전학습 가중치 사용
 - **Fine-tuning**: 전체 네트워크 학습 (FREEZE_BACKBONE=False)
 
-## 🤝 Contributing
+## Contributing
 
 이 프로젝트는 교육 목적으로 만들어졌습니다. 개선 사항이나 버그가 있다면 이슈를 등록해주세요.
 
-## 📄 License
+## License
 
 This project is for educational purposes.
 
-## 👤 Author
+## Author
 
 Machine Learning Course Project - 2025
 
 ---
 
-**Happy Training! 🚀**
+**Happy Training!**
